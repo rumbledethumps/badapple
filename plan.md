@@ -100,16 +100,9 @@ with the video.
 | MSX, MDPC, 2023, [`sm41761403`](https://www.nicovideo.jp/watch/sm41761403) | PSG + FM (MSX-MUSIC, YM2413 OPLL, to confirm), plus vocals as FM speech synthesis | aro | ROM available from [File Hunter](https://www.file-hunter.com/Homebrew/index.php?id=badapple). It holds the music as an MGS file titled "BAD APPLE!!", played by MGSDRV 3.20. |
 | Mega Drive, Mt.Chocolate (Future Driver), 2011, [`sm15708149`](https://www.nicovideo.jp/watch/sm15708149) | YM2612 FM + PSG | not stated; tagged as a self-made arrangement | Downloads were on Hotfile, which is gone ([page](http://68000.web.fc2.com/bad_apple.html), `apple_0.07.zip`). A later version sings through CSM speech synthesis from data the author was given ([`sm15762201`](https://www.nicovideo.jp/watch/sm15762201)). |
 
-The MSX cover is the best lead:
-
-- The YM2413 is a 2-operator FM chip from the same family as the OPL2,
-  so its voices map onto the OPL2 closely.
-- The MGS file can be converted to a VGM log, which gives the note
-  sequence and the register writes. libkss, for example, plays MGS files.
-- The video says the driver plays 0.33% fast. That is about 0.7 s over
-  the song, so it needs correcting to stay in sync.
-
-We need credit lines and permission from MDPC and aro.
+**Ruled out.** Both covers need FM and a PSG at the same time, and the
+RP6502 maps either its PSG or its OPL2, not both. Fitting them onto the
+OPL2 alone is too much work.
 - **MIDI transcriptions of the arrangement exist.** They are the likely
   input for an OPL2 version:
   - [MuseScore score 678091](https://musescore.com/user/1467236/scores/678091),
@@ -143,9 +136,6 @@ We need credit lines and permission from MDPC and aro.
       Records' terms on fan use.
 - [x] Search further for an existing FM or OPL cover of the arrangement,
       and its author.
-- [ ] Extract aro's MGS file from the MSX ROM, convert it to VGM, and
-      confirm its chips, length, and voices.
-- [ ] Look for an archived copy of Mt.Chocolate's `apple_0.07.zip`.
 - [ ] Decide on the audio source.
 
 ## Later steps (to be defined)
