@@ -52,6 +52,10 @@ is still online. The
 [Niconico API](https://ext.nicovideo.jp/api/getthumbinfo/sm8628149)
 reports it as mp4, 3:39 long, uploaded by あにら.
 
+The text that scrolls over the video on Niconico is viewer comments. The
+player draws them over the video, and its comment button hides them. They
+are not part of the video file.
+
 Downloading from Niconico needs an account. Niconico may now serve its own
 re-encode instead of the 2009 upload, so `ffprobe` on the downloaded file
 tells us what we have.
