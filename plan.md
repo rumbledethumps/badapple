@@ -35,30 +35,37 @@ position on fan use of the arrangement and the PV.
 
 ### The video
 
-| Property | Value | Confidence |
-|---|---|---|
-| Resolution | 512x384 (4:3) | UNVERIFIED, from [espbadapple](https://github.com/cnlohr/espbadapple) and a [Minecraft port write-up](https://purplesyringa.moe/blog/we-built-the-best-bad-apple-in-minecraft/) |
-| Frame rate | 30 fps | UNVERIFIED, from [Gigazine](https://gigazine.net/gsc_news/en/20240313-bad-apple-animation-font) |
-| Duration | 3:39 | Niconico API for `sm8628149` |
-| Frame count | 6570 ([espbadapple](https://github.com/cnlohr/espbadapple)); 6572 is also widely cited | UNVERIFIED |
-| Color | Black-and-white shadow art, with gray at the edges in the encode | to check |
-
-We need the original file to settle these. `ffprobe` on it gives the
-exact numbers.
-
 **The source:** Anira's original upload,
 [`sm8628149`](https://www.nicovideo.jp/watch/sm8628149) on Niconico. It
-is still online. The
-[Niconico API](https://ext.nicovideo.jp/api/getthumbinfo/sm8628149)
-reports it as mp4, 3:39 long, uploaded by あにら.
+is still online.
 
 The text that scrolls over the video on Niconico is viewer comments. The
 player draws them over the video, and its comment button hides them. They
 are not part of the video file.
 
-Downloading from Niconico needs an account. Niconico may now serve its own
-re-encode instead of the 2009 upload, so `ffprobe` on the downloaded file
-tells us what we have.
+yt-dlp downloads it without an account. Into `data/`, which Git ignores:
+
+```text
+yt-dlp -f "video-h264-360p-1+audio-aac-128kbps" -k --write-info-json \
+    -o "data/sm8628149.%(ext)s" https://www.nicovideo.jp/watch/sm8628149
+```
+
+Niconico offers 512x384 and 480x360 video. The 512x384 stream is its best.
+
+Measured with `ffprobe` on the download:
+
+| Property | Value |
+|---|---|
+| Resolution | 512x384 (4:3) |
+| Frame rate | 30/1 fps, constant |
+| Frame count | 6573 |
+| Duration | 219.1 s (video), 219.13 s (audio) |
+| Video codec | H.264 Main, yuv420p |
+| Audio | AAC, 44.1 kHz stereo, 128 kbps |
+| Color | Black-and-white shadow art. A frame at 60 s is 80% black, 16% white, and 4% gray, from soft edges and blur. |
+
+The files are Niconico's current encode. The file Anira uploaded in 2009
+is not offered, so these are the closest copy available.
 
 ### The audio
 
@@ -103,7 +110,7 @@ tells us what we have.
 
 ### Still to do in step 1
 
-- [ ] Get the original video and record its exact resolution, frame rate,
+- [x] Get the original video and record its exact resolution, frame rate,
       frame count, and duration with `ffprobe`.
 - [ ] Read ZUN's derivative-work guidelines. Look for Alstroemeria
       Records' terms on fan use.
