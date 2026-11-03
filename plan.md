@@ -84,7 +84,32 @@ with the video.
   credits, not as a soundtrack. (For the record, it is PC-98 FM: YM2203 or
   YM2608, both 4-operator, per
   [TCRF](https://new.tcrf.net/Proto:Touhou_Gensoukyou:_Lotus_Land_Story).)
-- **No OPL2 or AdLib cover of the arrangement found yet.**
+- **No OPL2 or AdLib cover found.** The DOS ports play digitized sound:
+  8088 Domination (Trixter, 2014) uses Sound Blaster PCM
+  ([blog](https://trixter.oldskool.org/2014/06/17/8088-domination)), and
+  Abaduaber's 2013 DOS port offers PC speaker, Sound Blaster, or Covox,
+  with sound code by Alexander Peslyak (from the strings of its data
+  file, [BadAppleJS](https://github.com/sairoutine/BadAppleJS)). The
+  Bad Apple music on [Demozoo](https://demozoo.org/search/?q=bad+apple) is
+  SID, POKEY, AY, SN76489, SAA1099, and MOD, with no FM.
+
+**FM covers of the arrangement found:**
+
+| Port | Chips | Music by | Status |
+|---|---|---|---|
+| MSX, MDPC, 2023, [`sm41761403`](https://www.nicovideo.jp/watch/sm41761403) | PSG + FM (MSX-MUSIC, YM2413 OPLL, to confirm), plus vocals as FM speech synthesis | aro | ROM available from [File Hunter](https://www.file-hunter.com/Homebrew/index.php?id=badapple). It holds the music as an MGS file titled "BAD APPLE!!", played by MGSDRV 3.20. |
+| Mega Drive, Mt.Chocolate (Future Driver), 2011, [`sm15708149`](https://www.nicovideo.jp/watch/sm15708149) | YM2612 FM + PSG | not stated; tagged as a self-made arrangement | Downloads were on Hotfile, which is gone ([page](http://68000.web.fc2.com/bad_apple.html), `apple_0.07.zip`). A later version sings through CSM speech synthesis from data the author was given ([`sm15762201`](https://www.nicovideo.jp/watch/sm15762201)). |
+
+The MSX cover is the best lead:
+
+- The YM2413 is a 2-operator FM chip from the same family as the OPL2,
+  so its voices map onto the OPL2 closely.
+- The MGS file can be converted to a VGM log, which gives the note
+  sequence and the register writes. libkss, for example, plays MGS files.
+- The video says the driver plays 0.33% fast. That is about 0.7 s over
+  the song, so it needs correcting to stay in sync.
+
+We need credit lines and permission from MDPC and aro.
 - **MIDI transcriptions of the arrangement exist.** They are the likely
   input for an OPL2 version:
   - [MuseScore score 678091](https://musescore.com/user/1467236/scores/678091),
@@ -116,8 +141,11 @@ with the video.
       frame count, and duration with `ffprobe`.
 - [ ] Read ZUN's derivative-work guidelines. Look for Alstroemeria
       Records' terms on fan use.
-- [ ] Search further for an existing FM or OPL cover of the arrangement,
+- [x] Search further for an existing FM or OPL cover of the arrangement,
       and its author.
+- [ ] Extract aro's MGS file from the MSX ROM, convert it to VGM, and
+      confirm its chips, length, and voices.
+- [ ] Look for an archived copy of Mt.Chocolate's `apple_0.07.zip`.
 - [ ] Decide on the audio source.
 
 ## Later steps (to be defined)
