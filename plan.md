@@ -69,18 +69,22 @@ is not offered, so these are the closest copy available.
 
 ### The audio
 
-- **The PV's soundtrack** is the Alstroemeria Records vocal arrangement,
-  a produced recording. The OPL2 cannot play it as recorded, so playing it
-  means a cover arranged for FM.
-- **ZUN's original** is FM chip music on the PC-98, at about 161 BPM, and
-  runs 1:22. It is not the PV's arrangement or length, so it cannot
-  accompany the video as it stands. Lotus Land Story supports the
-  PC-9801-26K board (YM2203, OPN) and the PC-9801-86 board (YM2608, OPNA).
-  Both are 4-operator FM. The OPL2 is 2-operator, so a conversion means
-  re-voicing the instruments, not copying the registers.
-  ([TCRF](https://new.tcrf.net/Proto:Touhou_Gensoukyou:_Lotus_Land_Story),
-  [vgmrips listing](https://vgmrips.net/packs/topic/2614))
-- **No OPL2 or AdLib arrangement found yet.**
+What we need is a 3:39 FM version of the **Alstroemeria Records
+arrangement**, the song the PV was animated to, so that it stays in sync
+with the video.
+
+- **The PV's soundtrack** is that arrangement: a produced vocal recording,
+  3:39 long. The OPL2 cannot play a recording, so we need a cover of it
+  arranged for FM. The AAC track in `data/` is the reference for timing
+  and sync.
+- **ZUN's 1998 original does not fit.** It is a different, shorter piece:
+  the instrumental Stage 3 music of the game, reported at about 161 BPM
+  and 1:22 long, which the game loops. The arrangement shares its melody,
+  but not its structure, length, or timing. The original matters for the
+  credits, not as a soundtrack. (For the record, it is PC-98 FM: YM2203 or
+  YM2608, both 4-operator, per
+  [TCRF](https://new.tcrf.net/Proto:Touhou_Gensoukyou:_Lotus_Land_Story).)
+- **No OPL2 or AdLib cover of the arrangement found yet.**
 - **MIDI transcriptions of the arrangement exist.** They are the likely
   input for an OPL2 version:
   - [MuseScore score 678091](https://musescore.com/user/1467236/scores/678091),
@@ -94,8 +98,6 @@ is not offered, so these are the closest copy available.
    YM2612) by another artist that we can credit and adapt.
 2. Convert a MIDI transcription of the arrangement to OPL2 ourselves,
    crediting the transcriber.
-3. Convert ZUN's original FM track. It is authentic, but it does not match
-   the video.
 
 ### Notable ports, for context
 
