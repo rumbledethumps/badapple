@@ -20,9 +20,8 @@ There is no original retro-computer program. The ports all start from a
 | 1998-08-14 | "Bad Apple!!", the Stage 3 theme of *Touhou Gensokyo ~ Lotus Land Story* (Touhou 4), NEC PC-98 | ZUN (composer; the Touhou games were by ZUN Soft at the time) |
 | 2006 | Track included in *Akyu's Untouched Score vol.1* | ZUN |
 | 2007-05-20 | "Bad Apple!! feat. nomico" on the album *Lovelight* (ARCD0018), released at the 4th Hakurei Shrine Reitaisai | Alstroemeria Records: Masayoshi Minoshima (arrangement), nomico (vocals), Haruka (lyrics) |
-| 2008-06-08 | Storyboard of a shadow-art PV posted to Niconico, asking someone to animate it | Μμ |
-| 2009-10-26/27 | The finished shadow-art PV, Niconico `sm8628149`. Sources give both dates. | Anira (あにら) and team |
-| 2009-10-28 | Official PV upload by the label | Alstroemeria Records |
+| 2008-06-08 | Storyboard of a shadow-art PV posted to Niconico as `nm3601701`, asking someone to animate it | Μμ |
+| 2009-10-27 03:13 JST (10-26 UTC) | The finished shadow-art PV, Niconico [`sm8628149`](https://www.nicovideo.jp/watch/sm8628149). Its description says it is based on `nm3601701`. | Anira (あにら), Niconico user 10731211 |
 
 Sources: [Wikipedia: Bad Apple!!](https://en.wikipedia.org/wiki/Bad_Apple!!),
 [Bilibili article on the PV's history](https://www.bilibili.com/read/cv3839234/),
@@ -40,20 +39,22 @@ position on fan use of the arrangement and the PV.
 |---|---|---|
 | Resolution | 512x384 (4:3) | UNVERIFIED, from [espbadapple](https://github.com/cnlohr/espbadapple) and a [Minecraft port write-up](https://purplesyringa.moe/blog/we-built-the-best-bad-apple-in-minecraft/) |
 | Frame rate | 30 fps | UNVERIFIED, from [Gigazine](https://gigazine.net/gsc_news/en/20240313-bad-apple-animation-font) |
-| Duration | 3:39 | several sources |
+| Duration | 3:39 | Niconico API for `sm8628149` |
 | Frame count | 6570 ([espbadapple](https://github.com/cnlohr/espbadapple)); 6572 is also widely cited | UNVERIFIED |
 | Color | Black-and-white shadow art, with gray at the edges in the encode | to check |
 
 We need the original file to settle these. `ffprobe` on it gives the
 exact numbers.
 
-**Where to get it** (candidates, closest to the original first):
+**The source:** Anira's original upload,
+[`sm8628149`](https://www.nicovideo.jp/watch/sm8628149) on Niconico. It
+is still online. The
+[Niconico API](https://ext.nicovideo.jp/api/getthumbinfo/sm8628149)
+reports it as mp4, 3:39 long, uploaded by あにら.
 
-1. Niconico `sm8628149`, Anira's original upload. It may need an account
-   to download.
-2. The Alstroemeria Records official upload of 2009-10-28.
-3. Re-uploads and archives, such as YouTube and archive.org. These are
-   often re-encoded at 480x360, so they come last.
+Downloading from Niconico needs an account. Niconico may now serve its own
+re-encode instead of the 2009 upload, so `ffprobe` on the downloaded file
+tells us what we have.
 
 ### The audio
 
