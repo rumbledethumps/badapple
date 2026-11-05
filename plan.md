@@ -141,6 +141,32 @@ of the blur back, but they draw a gray outline around every hard edge and
 need 406-463 tiles in a single frame, over the 256 that mode 2 holds. The
 port is **1bpp black and white**, tuned by adjusting the threshold.
 
+### Dithered levels, tested
+
+The four-level previews were redrawn as 1-bit: black, white, and the two
+middle levels filled with a fixed 8x8 pattern (ordered Bayer, clustered
+halftone, blue noise, or horizontal lines). The pattern turns the gray
+outline into a soft fringe and brings back the smear and the glow. Blue
+noise looks smoothest.
+
+Distinct 8x8 tiles over all 6573 frames, one fixed tile set. k is the
+number of crossing positions per tile edge for each iso-line; the 0.5
+line is the one in the middle of the list:
+
+| Config | Bayer | Halftone | Blue noise | Lines |
+|---|---|---|---|---|
+| B/W, k 4 | 190 | 190 | 190 | 190 |
+| 4 levels, k 4/4/4 | 2968 | 2709 | 3112 | 2973 |
+| 4 levels, k 2/4/2 | 1495 | 1098 | 1365 | 1395 |
+| 4 levels, k 1/4/1 | 1007 | 859 | 913 | 779 |
+| 4 levels, k 2/2/2 | 719 | 555 | 687 | 676 |
+| 4 levels, k 1/2/1 | 489 | 451 | 471 | 397 |
+| 5 levels, k 2/2/2/2 | 1428 | 1071 | 1450 | 1193 |
+| 5 levels, k 1/2/2/1 | 1258 | 1026 | 1252 | 887 |
+| 5 levels, k 1/1/1/1 | 716 | 558 | 716 | 546 |
+
+Only black and white fits mode 2's 256 tiles with one tile set.
+
 ### How other ports drew the same frames
 
 Frames 357, 2831, and 3308 (the hand reaching into light), matched in
