@@ -62,7 +62,8 @@ border counts four times. A small error inside a tile is hard to see, but
 a step in an outline where two tiles meet is easy to see. On average a
 frame is off from its exact tiles by about 6 of its 307,200 pixels.
 
-`src/encode.py` writes two files to `data/encoded/`:
+`src/encode.py` writes two files, and packs them into
+`src/badapple.tar.xz` for the build:
 
 - `tiles.bin`, 4096 bytes: the 256 bottom tiles, then the 256 top tiles,
   8 bytes each, one byte per row, leftmost pixel in the high bit. The ROM
@@ -73,10 +74,11 @@ frame is off from its exact tiles by about 6 of its 307,200 pixels.
   frame, 288,000 bytes per second, and 63.1 MB for the whole video. The ROM
   carries it as the named asset `ROM:video`.
 
-After writing the files, the encoder draws every frame back from them, the
-way the two layers do, and checks that each one comes out as encoded. It
-also writes `preview.mp4`, the encoded frames with the soundtrack. The
-whole video encodes in under two minutes.
+The archive is 2.2 MB, and Git keeps it, so the build needs no source video
+and no encoder. After writing the files, the encoder draws every frame back
+from them, the way the two layers do, and checks that each one comes out as
+encoded. It also writes `preview.mp4` in `data/encoded/`, the encoded frames
+with the soundtrack.
 
 ## The player
 
@@ -124,32 +126,39 @@ a file to XRAM.
 
 ## Building
 
-Requirements:
+Building needs CMake 3.28 or newer, Make or Ninja, and
+[llvm-mos](https://picocomputer.github.io/sdk.html#sdk-install):
 
-- CMake 3.28 or newer, Make or Ninja, and
-  [llvm-mos](https://picocomputer.github.io/sdk.html#sdk-install).
-- Python 3 with numpy, and ffmpeg.
-- [yt-dlp](https://github.com/yt-dlp/yt-dlp), to download the source
-  video.
+```text
+cmake --preset llvm-mos/Release
+cmake --build --preset llvm-mos/Release
+```
 
-The source video and the encoded data stay in `data/`, which Git ignores.
-Download the video, encode it, then build:
+The build unpacks `src/badapple.tar.xz` into the build folder, and writes
+the 63 MB ROM to `build/llvm-mos/release/badapple/badapple.rp6502`.
+
+### Encoding the video
+
+Encoding needs Python 3 with numpy, ffmpeg, and
+[yt-dlp](https://github.com/yt-dlp/yt-dlp). The source video stays in
+`data/`, which Git ignores. Download it, then encode it:
 
 ```text
 yt-dlp -f "video-h264-360p-1+audio-aac-128kbps" -o "data/sm8628149-512x384.%(ext)s" \
     https://www.nicovideo.jp/watch/sm8628149
 python3 src/encode.py data/sm8628149-512x384.mp4
-cmake --preset llvm-mos/Release
-cmake --build --preset llvm-mos/Release
 ```
 
-`src/encode.py --start 10 --seconds 5` encodes part of the video, and
-`--help` lists the other options. The first run builds the tile set from
-the whole video and caches it in `data/encoded/tileset.npz`.
+The whole video encodes in about a minute, plus 30 seconds the first time
+to build the tile set, which the encoder caches in
+`data/encoded/tileset.npz`. The encoder writes `src/badapple.tar.xz`, and
+the same video and settings give the same archive, byte for byte, so Git
+sees a change only when the encoding changes.
 
-The build writes `build/llvm-mos/release/badapple/badapple.rp6502`. Without
-the encoded data, it builds the player alone, which says that `ROM:video`
-is missing.
+`--start 10 --seconds 5` encodes five seconds from 10.0 s, into
+`data/encoded/badapple.tar.xz`, so the archive in `src/` keeps the whole
+video. To build a part, add `--archive src/badapple.tar.xz`. `--help` lists
+the other options.
 
 ## Running
 
@@ -163,14 +172,17 @@ is missing.
   test: one pass of the whole video in the emulator, which passes when no
   frame is late or skipped.
 
-On each push to `main`, `.github/workflows/web.yml` publishes the web player
-to GitHub Pages, from the `rp6502` comment below. That build has no encoded
-data, because `data/` is not in Git, so for now it plays the player alone.
+On each push to `main`, `.github/workflows/web.yml` builds the ROM and
+publishes the web player to GitHub Pages, from the `rp6502` comment below.
+The picture is the player's screen after 5664 VSYNCs, frame 2831.
 
 <!-- rp6502
 preset: llvm-mos/Release
 publish: badapple.zip
+frames: 5664
 -->
+[![Bad Apple!!, frame 2831](https://rumbledethumps.github.io/badapple/badapple/screenshot.png)](https://rumbledethumps.github.io/badapple/badapple/)
+
 [Bad Apple!! in the browser](https://rumbledethumps.github.io/badapple/badapple/)
 
 ## Updating the tools

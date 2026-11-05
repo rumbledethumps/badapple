@@ -16,6 +16,11 @@ layers is all black, which is transparent on the top layer. A cell shows a
 bottom tile under the top layer's tile 0, or a top tile over the bottom
 layer's tile 0.
 
+Output, in ARCHIVE, which the build unpacks: tiles.bin and video.bin,
+  below. For the whole video it is src/badapple.tar.xz, the archive the
+  build uses; for part of it, OUT/badapple.tar.xz. The archive has fixed
+  times and owners, so the same video and settings give the same bytes.
+
 Output, in OUT:
   tiles.bin    4096 bytes: 256 bottom tiles, then 256 top tiles, 8 bytes
                each, one byte per row, leftmost pixel in the high bit.
@@ -29,10 +34,13 @@ Output, in OUT:
 """
 
 import argparse
+import io
+import lzma
 import os
 import struct
 import subprocess
 import sys
+import tarfile
 import time
 
 import numpy as np
@@ -240,6 +248,20 @@ class Matcher:
         return i
 
 
+def write_archive(path, folder, names):
+    """A .tar.xz of the named files in folder, with fixed times and owners."""
+    tar_bytes = io.BytesIO()
+    with tarfile.open(fileobj=tar_bytes, mode="w", format=tarfile.USTAR_FORMAT) as tar:
+        for name in names:
+            with open(os.path.join(folder, name), "rb") as f:
+                data = f.read()
+            info = tarfile.TarInfo(name)
+            info.size, info.mtime, info.mode = len(data), 0, 0o644
+            tar.addfile(info, io.BytesIO(data))
+    with open(path, "wb") as f:
+        f.write(lzma.compress(tar_bytes.getvalue(), preset=9 | lzma.PRESET_EXTREME))
+
+
 def layer_of(index):
     """Set index to (bottom ID, top ID). Index 0 is the shared black tile."""
     if index == 0:
@@ -253,6 +275,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("video", help="source video, 512x384 at 30 fps")
     ap.add_argument("--out", default="data/encoded", help="output directory")
+    ap.add_argument("--archive", help="archive for the build (default: src/badapple.tar.xz for the "
+                    "whole video, OUT/badapple.tar.xz for part of it)")
     ap.add_argument("--start", type=float, default=0.0, help="first second to encode")
     ap.add_argument("--seconds", type=float, help="seconds to encode (default: to the end)")
     ap.add_argument("--dark", type=int, default=128, help="dark threshold, of 255")
@@ -262,6 +286,9 @@ def main():
     ap.add_argument("--no-preview", action="store_true", help="skip preview.mp4")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
+    if args.archive is None:
+        whole = args.start == 0 and args.seconds is None
+        args.archive = "src/badapple.tar.xz" if whole else os.path.join(args.out, "badapple.tar.xz")
 
     tiler = Tiler(args.dark / 255, args.light / 255, args.snap)
     cache = os.path.join(args.out, "tileset.npz")
@@ -327,6 +354,8 @@ def main():
           f"{stand_in_cells} of {count * MAP_BYTES} cells use a stand-in tile; "
           f"{len(match.stand_ins)} distinct stand-ins")
     print(f"Wrote tiles.bin and video.bin ({16 + count * FRAME_BYTES:,} bytes) to {args.out}")
+    write_archive(args.archive, args.out, ["tiles.bin", "video.bin"])
+    print(f"Wrote {args.archive} ({os.path.getsize(args.archive):,} bytes)")
     if set_seconds is not None:
         total = 6573
         print(f"Estimate for all {total} frames: {set_seconds:.0f} s for the tile set, then "
