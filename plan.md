@@ -73,6 +73,12 @@ The RP6502 is getting PCM audio, so the port plays the PV's own
 soundtrack, the Alstroemeria Records recording, from the AAC track in
 `data/`. The emulator and documentation for PCM audio come later.
 
+The soundtrack is real stereo, not mono in two channels. Over the whole
+track, left and right correlate at 0.91, and the difference (L-R) sits
+13 dB below the sum (L+R), up to 3 dB below it in the widest second. The
+two channels are balanced within 0.14 dB. A mono mix keeps every part,
+and loses only the stereo width.
+
 An FM version is no longer needed. The search for one found no OPL2 or
 AdLib cover. The DOS ports play digitized sound, and the two FM covers
 (MSX by MDPC with music by aro, and Mega Drive by Mt.Chocolate) need FM
