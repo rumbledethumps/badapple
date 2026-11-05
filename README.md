@@ -174,14 +174,14 @@ the other options.
 
 On each push to `main`, `.github/workflows/web.yml` builds the ROM and
 publishes the web player to GitHub Pages, from the `rp6502` comment below.
-The picture is the player's screen after 5664 VSYNCs, frame 2831.
+The picture is the player's screen after 716 VSYNCs, frame 357.
 
 <!-- rp6502
 preset: llvm-mos/Release
 publish: badapple.zip
-frames: 5664
+frames: 716
 -->
-[![Bad Apple!!, frame 2831](https://rumbledethumps.github.io/badapple/badapple/screenshot.png)](https://rumbledethumps.github.io/badapple/badapple/)
+[![Bad Apple!!, frame 357](https://rumbledethumps.github.io/badapple/badapple/screenshot.png)](https://rumbledethumps.github.io/badapple/badapple/)
 
 [Bad Apple!! in the browser](https://rumbledethumps.github.io/badapple/badapple/)
 

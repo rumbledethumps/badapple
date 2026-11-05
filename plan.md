@@ -361,8 +361,8 @@ The encoded video is in Git as `src/badapple.tar.xz`, 2,188,392 bytes
 (xz at its strongest preset; bz2 made 2.25 MB and zlib 3.07 MB). The
 encoder writes it with fixed times and owners, so the same input gives
 the same bytes. The build unpacks it with `cmake -E tar`, so CI builds and
-publishes the full ROM. The README's screenshot is after 5664 VSYNCs,
-frame 2831.
+publishes the full ROM. The README's screenshot is after 716 VSYNCs,
+frame 357.
 
 ## Later steps (to be defined)
 
