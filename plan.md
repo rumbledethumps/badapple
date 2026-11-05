@@ -215,6 +215,23 @@ reproduce their detail.
 With the checkerboard at 2/4/2, the three test frames use 116, 156, and
 117 tiles.
 
+### Chosen look, and its tile budget
+
+Picked in the tuner on frame 2831: three levels stacked (black, a 50%
+checkerboard fill, white), dark threshold 128 and light threshold 192 of
+255, both lines snapped to 4 positions per tile edge. The edges of the
+fill matter more than its interior. All three levels must be supported.
+
+| Snapping, dark/light | Tiles in the video | Per frame, median | Per frame, max | Frames over 256 |
+|---|---|---|---|---|
+| **4/4 (chosen)** | **1446** | 151 | 386 (frame 1889, 63.0 s) | 405 |
+| 4/2 | 753 | 128 | 320 | 30 |
+| 2/4 | 733 | 121 | 286 | 10 |
+| 2/2 | 361 | 96 | 220 | 0 |
+
+The chosen look does not fit one fixed set of 256 tiles. Most frames fit
+256 on their own.
+
 ### How other ports drew the same frames
 
 Frames 357, 2831, and 3308 (the hand reaching into light), matched in
