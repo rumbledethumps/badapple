@@ -362,6 +362,17 @@ the same bytes. The build unpacks it with `cmake -E tar`, so CI builds and
 publishes the full ROM. The README's screenshot is after 716 VSYNCs,
 frame 357.
 
+### Alternatives compared, and kept as they are
+
+- **Corner sampling.** Point samples (nearest, bilinear, bicubic as from
+  scaling to 641x481, Lanczos) look about the same as the one-cell
+  average, better in some frames and worse in others. At snap 3 they
+  need 868-1059 distinct tiles, against 862 for the average, which stays.
+- **A 320x240 bitmap.** One mode 3 bitmap at 1bpp is the same 9,600 bytes
+  per frame. Dithered with halftone screens, Bayer, blue noise, or
+  Floyd-Steinberg, it looks far worse than the 640x480 marching-squares
+  tiles, which stay.
+
 ## Later steps (to be defined)
 
 - Audio playback, when the PCM emulator and documentation arrive.
