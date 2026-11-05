@@ -133,6 +133,31 @@ and a PSG at once, which the RP6502 cannot do.
 - The video stream is not stored as height maps. The decoder
   double-buffers the two 80x60 tile maps.
 
+### Decision: black and white
+
+Previews of frames 357 (the arm swing) and 2831 (two girls in a glow)
+compared black and white tiles with four-gray tiles. Four grays put some
+of the blur back, but they draw a gray outline around every hard edge and
+need 406-463 tiles in a single frame, over the 256 that mode 2 holds. The
+port is **1bpp black and white**, tuned by adjusting the threshold.
+
+### How other ports drew the same frames
+
+Frames 357, 2831, and 3308 (the hand reaching into light), matched in
+YouTube captures:
+
+| Port | Capture | How it shows the soft edges |
+|---|---|---|
+| IBM PC 5160, 8088 Domination (Trixter, 2014) | [MWdG413nNkI](https://www.youtube.com/watch?v=MWdG413nNkI) | Dithered, with horizontal line patterns for the glow and the blur |
+| Atari STE, fenarinarsa (2017) | [aIeAIgGnx0M](https://www.youtube.com/watch?v=aIeAIgGnx0M) | Dithered gray; closest to the source |
+| Mega Drive, Stef (2012) | [2vPe452cegU](https://www.youtube.com/watch?v=2vPe452cegU) | Seven flat gray levels, banded like the four-gray preview |
+| Atari 8-bit, Bad Apple HD (JAC! and others, 2018) | [nMsMypjnI3Q](https://www.youtube.com/watch?v=nMsMypjnI3Q) | 1-bit threshold; the glow swallows the right girl in 2831 |
+| Amiga, Electric Black Sheep vectorized (2022) | [4aWe9AqW5bc](https://www.youtube.com/watch?v=4aWe9AqW5bc) | 1-bit vectors; the same merge with the glow in 2831 |
+| C64, Onslaught (2014) | [fu7rRYkWsyk](https://www.youtube.com/watch?v=fu7rRYkWsyk) | 1-bit blocks, dithered glow; has 2200 frames, and 2831 was not found |
+
+The Atari 8-bit, Amiga, and C64 versions run at lower frame rates, so
+their frames are the nearest ones, not exact matches.
+
 ## Later steps (to be defined)
 
 - Audio playback, when the PCM emulator and documentation arrive.
