@@ -101,6 +101,8 @@ Stereo, 16-bit, for 219.13 s:
 | 24 kHz | 12 kHz | 96,000 | 21.0 MB |
 | 22.05 kHz | 11.03 kHz | 88,200 | 19.3 MB |
 
+**Decision:** 32 kHz, stereo, 16-bit raw PCM, 128,000 bytes per second.
+
 An FM version is no longer needed. The search for one found no OPL2 or
 AdLib cover. The DOS ports play digitized sound, and the two FM covers
 (MSX by MDPC with music by aro, and Mega Drive by Mt.Chocolate) need FM
@@ -313,7 +315,7 @@ their frames are the nearest ones, not exact matches.
 
 ## Step 3: first animation
 
-`encoder/encode.py` encodes a span of the video; `src/main.c` plays it.
+`src/encode.py` encodes a span of the video; `src/main.c` plays it.
 
 - **Encoder:** thresholds 128/192, snap 3/3, checkerboard fill. The tile
   set is the 511 tiles the whole video uses most, cached in
@@ -348,6 +350,12 @@ tiles left out of the set appear as stand-ins somewhere. `video.bin` is
 `play` test runs one full loop in the emulator, 48.97 s unpaced, with no
 frame late or dropped. A screenshot after 6620 VSYNCs matches frame 3309
 (110.30 s) pixel for pixel.
+Measured over the whole video with the border weighting, a frame is off
+from its exact tiles by 5.64 pixels on average, 4.05 of them on tile
+borders.
+
+The video is done. The encoder is `src/encode.py`, and the project is
+C only.
 
 ## Later steps (to be defined)
 
