@@ -260,6 +260,33 @@ fill matter more than its interior. All three levels must be supported.
 The chosen look does not fit one fixed set of 256 tiles. Most frames fit
 256 on their own.
 
+### 511 tiles from two layers
+
+Two mode 2 layers, each with its own 256 tiles. Each layer has one
+all-black tile: black is transparent on the top layer, so a cell shows
+either a top tile over the bottom layer's black, or the bottom layer's
+tile through the top layer's black. That makes 511 visible tiles. The
+tile sets stay fixed for the whole video; each frame streams both 80x60
+maps, 9,600 bytes, or 288,000 bytes a second at 30 fps.
+
+The set keeps the 511 tiles the video uses most. A cell whose ideal tile
+is not in the set shows the set's nearest tile, the one with the fewest
+different pixels. Dark threshold 128, light 192:
+
+| Snap | Distinct tiles | Cells exact | Wrong pixels per frame against a 1/4-pixel reference, mean | Worst frame |
+|---|---|---|---|---|
+| 2/2 | 361 | 100% | 1118 | 3349 |
+| 4/4 | 1446 | 99.72% | 593 | 1837 |
+| 5/5 | 2604 | 99.27% | 529 | 1637 |
+| 6/6 | 3467 | 98.98% | 486 | 1762 |
+| 8/8 | 5509 | 98.55% | 466 | 1699 |
+
+Finer snapping still wins with the limit. At 8/8 a crossing can land on
+any pixel; 1.45% of cells show a stand-in tile, and the result is off by
+466 of 307,200 pixels a frame on average. Only 2/2 fits 511 tiles
+exactly. A selection that weighs each tile's stand-in error, rather than
+counting uses alone, could do better.
+
 ### How other ports drew the same frames
 
 Frames 357, 2831, and 3308 (the hand reaching into light), matched in
