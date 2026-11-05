@@ -79,6 +79,28 @@ track, left and right correlate at 0.91, and the difference (L-R) sits
 two channels are balanced within 0.14 dB. A mono mix keeps every part,
 and loses only the stereo width.
 
+What the download holds: AAC-LC at 44.1 kHz, about 113 kbps. Its encoder
+cut everything above about 15.4 kHz: the average spectrum falls from
+-49 dB at 15 kHz to -75 dB at 15.5 kHz, then stays at the noise floor to
+22 kHz. So a 32 kHz sample rate (16 kHz bandwidth) carries nearly all of
+it. The file cannot show whether the master was 44.1 or 48 kHz, because
+the cutoff erased any trace. The arrangement came out on a CD, *Lovelight*,
+and CD audio is 44.1 kHz, 16-bit.
+
+The master is loud: overall RMS -8.4 dBFS, half-second RMS between -8.3
+(median) and -6.6 dBFS (loudest), peaks at 0 dBFS with 0.14% of samples
+clipped. 16 bits is plenty. A resampler should lower the gain about 1 dB
+so its filter does not clip.
+
+Stereo, 16-bit, for 219.13 s:
+
+| Sample rate | Bandwidth | Bytes per second | Whole song |
+|---|---|---|---|
+| 44.1 kHz | 22.05 kHz | 176,400 | 38.7 MB |
+| 32 kHz | 16 kHz | 128,000 | 28.0 MB |
+| 24 kHz | 12 kHz | 96,000 | 21.0 MB |
+| 22.05 kHz | 11.03 kHz | 88,200 | 19.3 MB |
+
 An FM version is no longer needed. The search for one found no OPL2 or
 AdLib cover. The DOS ports play digitized sound, and the two FM covers
 (MSX by MDPC with music by aro, and Mega Drive by Mt.Chocolate) need FM
