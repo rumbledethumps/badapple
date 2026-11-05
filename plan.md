@@ -67,55 +67,16 @@ Measured with `ffprobe` on the download:
 The files are Niconico's current encode. The file Anira uploaded in 2009
 is not offered, so these are the closest copy available.
 
-### The audio
+### The audio: solved
 
-What we need is a 3:39 FM version of the **Alstroemeria Records
-arrangement**, the song the PV was animated to, so that it stays in sync
-with the video.
+The RP6502 is getting PCM audio, so the port plays the PV's own
+soundtrack, the Alstroemeria Records recording, from the AAC track in
+`data/`. The emulator and documentation for PCM audio come later.
 
-- **The PV's soundtrack** is that arrangement: a produced vocal recording,
-  3:39 long. The OPL2 cannot play a recording, so we need a cover of it
-  arranged for FM. The AAC track in `data/` is the reference for timing
-  and sync.
-- **ZUN's 1998 original does not fit.** It is a different, shorter piece:
-  the instrumental Stage 3 music of the game, reported at about 161 BPM
-  and 1:22 long, which the game loops. The arrangement shares its melody,
-  but not its structure, length, or timing. The original matters for the
-  credits, not as a soundtrack. (For the record, it is PC-98 FM: YM2203 or
-  YM2608, both 4-operator, per
-  [TCRF](https://new.tcrf.net/Proto:Touhou_Gensoukyou:_Lotus_Land_Story).)
-- **No OPL2 or AdLib cover found.** The DOS ports play digitized sound:
-  8088 Domination (Trixter, 2014) uses Sound Blaster PCM
-  ([blog](https://trixter.oldskool.org/2014/06/17/8088-domination)), and
-  Abaduaber's 2013 DOS port offers PC speaker, Sound Blaster, or Covox,
-  with sound code by Alexander Peslyak (from the strings of its data
-  file, [BadAppleJS](https://github.com/sairoutine/BadAppleJS)). The
-  Bad Apple music on [Demozoo](https://demozoo.org/search/?q=bad+apple) is
-  SID, POKEY, AY, SN76489, SAA1099, and MOD, with no FM.
-
-**FM covers of the arrangement found:**
-
-| Port | Chips | Music by | Status |
-|---|---|---|---|
-| MSX, MDPC, 2023, [`sm41761403`](https://www.nicovideo.jp/watch/sm41761403) | PSG + FM (MSX-MUSIC, YM2413 OPLL, to confirm), plus vocals as FM speech synthesis | aro | ROM available from [File Hunter](https://www.file-hunter.com/Homebrew/index.php?id=badapple). It holds the music as an MGS file titled "BAD APPLE!!", played by MGSDRV 3.20. |
-| Mega Drive, Mt.Chocolate (Future Driver), 2011, [`sm15708149`](https://www.nicovideo.jp/watch/sm15708149) | YM2612 FM + PSG | not stated; tagged as a self-made arrangement | Downloads were on Hotfile, which is gone ([page](http://68000.web.fc2.com/bad_apple.html), `apple_0.07.zip`). A later version sings through CSM speech synthesis from data the author was given ([`sm15762201`](https://www.nicovideo.jp/watch/sm15762201)). |
-
-**Ruled out.** Both covers need FM and a PSG at the same time, and the
-RP6502 maps either its PSG or its OPL2, not both. Fitting them onto the
-OPL2 alone is too much work.
-- **MIDI transcriptions of the arrangement exist.** They are the likely
-  input for an OPL2 version:
-  - [MuseScore score 678091](https://musescore.com/user/1467236/scores/678091),
-    uploaded by livingston26 and credited to cherry_berry17. espbadapple
-    used a modified copy, with a percussion track added by binary1230.
-  - [MidiShow 188734](https://midishow.com/en/midi/bad-apple-midi-download-188734),
-    a General MIDI version uploaded by ndxggm.
-
-**Audio options, in order:**
-1. Find an existing FM cover of the arrangement (OPL2 or OPL3, YM2413, or
-   YM2612) by another artist that we can credit and adapt.
-2. Convert a MIDI transcription of the arrangement to OPL2 ourselves,
-   crediting the transcriber.
+An FM version is no longer needed. The search for one found no OPL2 or
+AdLib cover. The DOS ports play digitized sound, and the two FM covers
+(MSX by MDPC with music by aro, and Mega Drive by Mt.Chocolate) need FM
+and a PSG at once, which the RP6502 cannot do.
 
 ### Notable ports, for context
 
@@ -134,13 +95,44 @@ OPL2 alone is too much work.
       frame count, and duration with `ffprobe`.
 - [ ] Read ZUN's derivative-work guidelines. Look for Alstroemeria
       Records' terms on fan use.
-- [x] Search further for an existing FM or OPL cover of the arrangement,
-      and its author.
-- [ ] Decide on the audio source.
+- [x] Decide on the audio source: the original soundtrack, as PCM.
+
+## Step 2: 1-bit video
+
+### Research: the soft edges
+
+- No write-up was found about recovering the motion blur, and no cleaner
+  source than Niconico's. The ports simply threshold, often at 127 of 255
+  (for example the [RACECAR Neo guide](https://mitracecarneo.github.io/racecar-neo-library/guides/bad-apple.html)),
+  or dither.
+- The gray is in the artwork. Measured over all 6573 frames of the
+  512x384 download, counting pixels from 48 to 207 as gray:
+
+  | | Gray pixels |
+  |---|---|
+  | Median frame | 1.07% |
+  | Mean | 2.03% |
+  | 90th percentile | 4.69% |
+  | 99th percentile | 15.78% |
+  | Worst frame | 33.56% (frame 3308, 110.3 s) |
+
+  618 frames are over 5% gray, 164 over 10%, and 33 over 20%. The worst
+  frames (3305-3313 at 110 s, and 2831 at 94.4 s) are glows, gradients,
+  and motion blur that the animation draws, not compression damage. The
+  gray share correlates only weakly with motion (0.37). So no unblurred
+  version is likely to exist.
+
+### Proposed approach
+
+- Scale each frame to an 81x61 grid of samples.
+- Treat the samples as the corners of 80x60 cells, and pick each cell's
+  tile from its four corners, marching-squares style.
+- Show the tiles with mode 2: 1bpp 8x8 tiles fill a 640x480 canvas as
+  80x60 tiles. Up to 256 tiles at 8 bytes each is 2 KB. Each 80x60 map is
+  4,800 bytes, so two pages for double buffering are 9,600 bytes.
+- The video stream is not stored as height maps. The decoder
+  double-buffers the two 80x60 tile maps.
 
 ## Later steps (to be defined)
 
-- Video encoder and decoder. One idea is to treat the video as a 3D
-  volume, use marching cubes over x, y, and t, and slice it per frame. It
-  is noted here as one option, not a commitment.
-- Audio on the OPL2.
+- Audio playback, when the PCM emulator and documentation arrive.
