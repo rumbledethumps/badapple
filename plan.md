@@ -311,6 +311,34 @@ YouTube captures:
 The Atari 8-bit, Amiga, and C64 versions run at lower frame rates, so
 their frames are the nearest ones, not exact matches.
 
+## Step 3: first animation
+
+`encoder/encode.py` encodes a span of the video; `src/main.c` plays it.
+
+- **Encoder:** thresholds 128/192, snap 3/3, checkerboard fill. The tile
+  set is the 511 tiles the whole video uses most, cached in
+  `tileset.npz`. A stand-in is the kept tile with the fewest different
+  pixels, counting border pixels 4 times. The encoder draws the layers
+  back from its own files and checks every frame.
+- **Files:** `tiles.bin` (4096 bytes, loaded into XRAM before start) and
+  `video.bin` (a 16-byte header, then 9,600 bytes a frame), packaged as
+  the named asset `ROM:video`.
+- **Player:** two buffers. Each frame is read with `read_xram` into the
+  back buffer, then both layers point at it on the first VSYNC at or
+  after the frame's time, two VSYNCs per frame. A frame that is already
+  due waits for the next VSYNC rather than tearing, and playback that
+  falls a whole frame behind skips ahead to the frame that is due. It
+  prints the late and dropped frames at the end of each loop.
+- **Test:** `tests/play.txt` (ctest `play`) passes one loop with no frame
+  late or dropped.
+
+First run: 5 seconds, frames 300-449 (10.0-15.0 s). The tile set took
+30 s over the whole video, the 150 frames 1.1 s. 383 of 720,000 cells use
+a stand-in. Emulator screenshots after 60, 117, and 208 VSYNCs match
+encoded frames 29, 58, and 103 pixel for pixel. The whole video would
+take about 30 s for the set plus 48 s to encode, and makes 63.1 MB of
+maps.
+
 ## Later steps (to be defined)
 
 - Audio playback, when the PCM emulator and documentation arrive.

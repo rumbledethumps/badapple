@@ -1,0 +1,2 @@
+# One pass of the clip at 30 fps, with no frame late or dropped.
+wait "Loop 1: 0 late, 0 dropped" 600

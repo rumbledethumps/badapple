@@ -1,2 +1,5 @@
-This information is displayed with the HELP and INFO monitor commands.
-Please change it to suit your project.
+Bad Apple!! on the Picocomputer 6502.
+Shadow-art PV by Anira, Niconico sm8628149 (2009), from a storyboard by Mu.
+"Bad Apple!! feat. nomico" by Alstroemeria Records (2007): arrangement by
+Masayoshi Minoshima, vocals by nomico, lyrics by Haruka. Original music by
+ZUN, Touhou Gensokyo ~ Lotus Land Story (1998).

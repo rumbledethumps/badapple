@@ -32,7 +32,7 @@ a BASIC ROM into `hello.rp6502`, and BASIC runs it at start:
 
 <!-- rp6502
 preset: llvm-mos/Release
-publish: hello.zip
+publish: badapple.zip
 -->
 [![Hello, world!](https://picocomputer.github.io/rp6502-sdk/hello/screenshot.png)](https://picocomputer.github.io/rp6502-sdk/hello/)
 
