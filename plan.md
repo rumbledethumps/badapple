@@ -196,7 +196,8 @@ along some character edges, where a corner sample lands in a band.
 
 ### Three levels
 
-Black, white, and one halftone at 50%, at most two levels per tile. A
+Black, white, and one 50% fill, at most two levels per tile. The fill is
+a checkerboard, every other pixel, not a halftone dot screen. A
 corner is black under the dark threshold (0.25), white over the light
 one (0.75), and halftone between. A cell with black and halftone corners
 splits on the dark line, halftone and white on the light line, and black
@@ -206,11 +207,13 @@ reproduce their detail.
 
 | Snapping, dark/middle/light | Tiles in the video |
 |---|---|
-| 1/4/1 | 167 |
-| **2/4/2** | **221** |
-| 4/4/4 | 409 |
+| 1/4/1, 45-degree halftone | 167 |
+| 2/4/2, 45-degree halftone | 221 |
+| 4/4/4, 45-degree halftone | 409 |
+| **2/4/2, checkerboard** | **235** |
 
-At 2/4/2 the three test frames use 107, 142, and 108 tiles.
+With the checkerboard at 2/4/2, the three test frames use 116, 156, and
+117 tiles.
 
 ### How other ports drew the same frames
 
