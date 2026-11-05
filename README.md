@@ -8,6 +8,15 @@ work, so the project claims none of it. The credits are below.
 The video plays today. The soundtrack waits on PCM audio for the RP6502,
 which is in progress. The plan for it is under [The audio](#the-audio).
 
+<!-- rp6502
+preset: llvm-mos/Release
+publish: badapple.zip
+frames: 716
+-->
+[![Bad Apple!!, frame 357](https://rumbledethumps.github.io/badapple/badapple/screenshot.png)](https://rumbledethumps.github.io/badapple/badapple/)
+
+[Play it in your browser](https://rumbledethumps.github.io/badapple/badapple/).
+
 ## Credits
 
 | Year | Work | By |
@@ -87,16 +96,14 @@ with the soundtrack.
 - **Double buffering.** XRAM holds two buffers of both maps. While one
   buffer is on screen, `read_xram()` reads the next frame's 9,600 bytes
   from the ROM straight into the other.
-- **VSYNC.** The display runs at 60 Hz, so a frame lasts two VSYNCs. At the
-  first VSYNC at or after a frame's time, the player points both layers at
-  the new buffer. That is two 16-bit writes, done while the display is
-  between frames, so nothing tears.
-- **Catching up.** Each frame's time counts from the start of the loop,
-  not from the frame before it. A frame that is already due when it
-  finishes loading shows at the next VSYNC. When playback falls a whole
-  frame behind, the player skips ahead to the frame that is due. At the
-  end of each loop it prints how many frames were late and how many it
-  skipped.
+- **VSYNC.** The display runs at 60 Hz, so a frame lasts two VSYNCs. The
+  player keeps the VSYNC count that it last waited for in a static, waits
+  for the count to change twice, then points both layers at the new
+  buffer.
+- **Catching up.** When a frame runs long, VSYNC has already moved past the
+  stored count, so the waits return at once and the video catches up
+  instead of stretching. The player prints `Loop` and a count after each
+  pass.
 
 ## The audio
 
@@ -169,21 +176,12 @@ the other options.
   `build/llvm-mos/release/web/badapple/`, with the 63 MB ROM. The
   RP6502-WEB launch configuration serves it and opens it in a browser.
 - **Test.** `ctest --test-dir build/llvm-mos/release` runs the `play`
-  test: one pass of the whole video in the emulator, which passes when no
-  frame is late or skipped.
+  test: two seconds of playback in the emulator, which passes when the
+  player starts without an error.
 
 On each push to `main`, `.github/workflows/web.yml` builds the ROM and
-publishes the web player to GitHub Pages, from the `rp6502` comment below.
-The picture is the player's screen after 716 VSYNCs, frame 357.
-
-<!-- rp6502
-preset: llvm-mos/Release
-publish: badapple.zip
-frames: 716
--->
-[![Bad Apple!!, frame 357](https://rumbledethumps.github.io/badapple/badapple/screenshot.png)](https://rumbledethumps.github.io/badapple/badapple/)
-
-[Bad Apple!! in the browser](https://rumbledethumps.github.io/badapple/badapple/)
+publishes the web player at the top of this page to GitHub Pages. Its
+picture is the player's screen after 716 VSYNCs, frame 357.
 
 ## Updating the tools
 

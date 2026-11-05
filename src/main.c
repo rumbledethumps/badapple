@@ -4,42 +4,24 @@
 #include <unistd.h>
 #include "xram.h"
 
-/* Plays ROM:video, made by encoder/encode.py, in a loop. Each frame is the
+/* Plays ROM:video, made by src/encode.py, in a loop. Each frame is the
  * bottom and top maps, read straight into the back buffer in XRAM, then
- * shown by pointing both layers at it on a VSYNC. A 30 fps frame lasts two
- * 60 Hz VSYNCs. */
+ * shown by pointing both layers at it. A 30 fps frame lasts two 60 Hz
+ * VSYNCs. */
 
 #define HEADER_BYTES 16
 #define VSYNCS_PER_FRAME 2
 
-static unsigned vsyncs;
-static uint8_t vsync_last;
+static uint8_t vsync;
 
-/* VSYNC counts to 255 and wraps, so keep a wider count. */
-static void vsync_poll(void)
+/* Waits for the VSYNC after the last one waited for. When playback is
+ * behind, VSYNC has already moved on, so this returns at once and the
+ * video catches up. */
+static void wait_vsync(void)
 {
-    uint8_t v = ria_vsync();
-    vsyncs += (uint8_t)(v - vsync_last);
-    vsync_last = v;
-}
-
-/* Flips on the first VSYNC at or after target. A frame that is already
- * due waits for the next VSYNC, so the flip never tears. Returns true when
- * the frame was late. */
-static bool wait_vsync(unsigned target)
-{
-    vsync_poll();
-    if ((int)(vsyncs - target) >= 0)
-    {
-        uint8_t v = vsync_last;
-        while (ria_vsync() == v)
-            ;
-        vsync_poll();
-        return true;
-    }
-    while ((int)(vsyncs - target) < 0)
-        vsync_poll();
-    return false;
+    while (ria_vsync() == vsync)
+        ;
+    ++vsync;
 }
 
 static void show(uint8_t buffer)
@@ -64,18 +46,12 @@ static bool load(int fd, uint8_t buffer)
     return true;
 }
 
-static bool seek_frame(int fd, unsigned frame)
-{
-    return lseek(fd, HEADER_BYTES + (long)frame * FRAME_BYTES, SEEK_SET) >= 0;
-}
-
 int main(void)
 {
     uint8_t header[HEADER_BYTES];
     mode2_config_t config;
-    unsigned frames, frame, start, late = 0, dropped = 0, loops = 0;
-    uint8_t back = 1;
-    uint8_t layer;
+    unsigned frames, frame = 0, loops = 0;
+    uint8_t back = 1, layer, i;
     int fd = open("ROM:video", O_RDONLY);
 
     if (fd < 0 || read(fd, header, HEADER_BYTES) != HEADER_BYTES ||
@@ -111,36 +87,21 @@ int main(void)
     xreg_vga_mode2(MODE2_1BPP | MODE2_8X8, XRAM_CONFIG, 0);
     xreg_vga_mode2(MODE2_1BPP | MODE2_8X8, XRAM_CONFIG + sizeof(mode2_config_t), 1);
 
-    vsync_last = ria_vsync();
-    start = vsyncs;
-    frame = 0;
+    vsync = ria_vsync();
     while (1)
     {
-        /* The next frame is the one due at the next flip. When playback has
-         * fallen a whole frame behind, skip ahead to catch up. */
-        unsigned next = frame + 1, due;
-        vsync_poll();
-        due = (vsyncs - start) / VSYNCS_PER_FRAME + 1;
-        if (due > next)
+        if (++frame == frames)
         {
-            dropped += due - next;
-            next = due;
-            if (next < frames && !seek_frame(fd, next))
-                return 1;
-        }
-        if (next >= frames)
-        {
-            printf("Loop %u: %u late, %u dropped\n", ++loops, late, dropped);
-            next = 0;
-            start = vsyncs + VSYNCS_PER_FRAME;
-            if (!seek_frame(fd, 0))
+            printf("Loop %u\n", ++loops);
+            frame = 0;
+            if (lseek(fd, HEADER_BYTES, SEEK_SET) < 0)
                 return 1;
         }
         if (!load(fd, back))
             return 1;
-        late += wait_vsync(start + next * VSYNCS_PER_FRAME);
+        for (i = 0; i < VSYNCS_PER_FRAME; i++)
+            wait_vsync();
         show(back);
         back ^= 1;
-        frame = next;
     }
 }

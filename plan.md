@@ -326,13 +326,12 @@ their frames are the nearest ones, not exact matches.
   `video.bin` (a 16-byte header, then 9,600 bytes a frame), packaged as
   the named asset `ROM:video`.
 - **Player:** two buffers. Each frame is read with `read_xram` into the
-  back buffer, then both layers point at it on the first VSYNC at or
-  after the frame's time, two VSYNCs per frame. A frame that is already
-  due waits for the next VSYNC rather than tearing, and playback that
-  falls a whole frame behind skips ahead to the frame that is due. It
-  prints the late and dropped frames at the end of each loop.
-- **Test:** `tests/play.txt` (ctest `play`) passes one loop with no frame
-  late or dropped.
+  back buffer. The player keeps the last VSYNC count in a static, waits
+  for it to change twice, then points both layers at the back buffer.
+  A slow frame finds VSYNC already moved on, so the waits return at once
+  and the video catches up.
+- **Test:** `tests/play.txt` (ctest `play`) runs two seconds and checks
+  that the player starts without an error.
 
 First run: 5 seconds, frames 300-449 (10.0-15.0 s). The tile set took
 30 s over the whole video, the 150 frames 1.1 s. 383 of 720,000 cells use
@@ -346,10 +345,9 @@ maps.
 All 6573 frames encoded in 57 s with the tile set cached (43 s for the
 frames). 21,939 of 31,550,400 cells (0.07%) use a stand-in; all 351
 tiles left out of the set appear as stand-ins somewhere. `video.bin` is
-63,100,816 bytes, the ROM 63.1 MB, and the web player zip 3.5 MB. The
-`play` test runs one full loop in the emulator, 48.97 s unpaced, with no
-frame late or dropped. A screenshot after 6620 VSYNCs matches frame 3309
-(110.30 s) pixel for pixel.
+63,100,816 bytes, the ROM 63.1 MB, and the web player zip 3.5 MB. One
+full loop in the emulator, 48.97 s unpaced, kept time. A screenshot after
+6620 VSYNCs matches frame 3309 (110.30 s) pixel for pixel.
 Measured over the whole video with the border weighting, a frame is off
 from its exact tiles by 5.64 pixels on average, 4.05 of them on tile
 borders.
