@@ -339,6 +339,16 @@ encoded frames 29, 58, and 103 pixel for pixel. The whole video would
 take about 30 s for the set plus 48 s to encode, and makes 63.1 MB of
 maps.
 
+### The whole video
+
+All 6573 frames encoded in 57 s with the tile set cached (43 s for the
+frames). 21,939 of 31,550,400 cells (0.07%) use a stand-in; all 351
+tiles left out of the set appear as stand-ins somewhere. `video.bin` is
+63,100,816 bytes, the ROM 63.1 MB, and the web player zip 3.5 MB. The
+`play` test runs one full loop in the emulator, 48.97 s unpaced, with no
+frame late or dropped. A screenshot after 6620 VSYNCs matches frame 3309
+(110.30 s) pixel for pixel.
+
 ## Later steps (to be defined)
 
 - Audio playback, when the PCM emulator and documentation arrive.
