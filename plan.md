@@ -167,6 +167,33 @@ line is the one in the middle of the list:
 
 Only black and white fits mode 2's 256 tiles with one tile set.
 
+### At most two levels per tile
+
+In the plain four-level render, a hard black-to-white edge crosses all
+three lines inside one tile, which leaves a thin band of halftone around
+every character. The rule: a tile holds at most two levels. A cell whose
+corners span one level splits on the line between them. A cell whose
+corners span two or more levels splits on the middle line only, with its
+lowest level on one side and its highest on the other, so a hard edge
+draws as clean black and white. The smear and the glow keep their bands.
+
+Before the rule, the three test frames have 47-132 tiles holding all four
+levels and 90-168 holding three. Tiles over the whole video, halftone
+screen at 45 degrees:
+
+| Snapping | Tiles in the video |
+|---|---|
+| All lines 4 | 666 |
+| Dark and light lines 2, middle 4 | 540 |
+| Dark and light lines 1, middle 4 | 502 |
+| Dark and light lines 1; middle 4 for black and white, 2 for halftone tiles | 268 |
+| Dark and light lines 1; middle 4 for black and white, 1 for halftone tiles | **215** |
+
+The last row fits mode 2's 256 tiles with one tile set. Black-and-white
+edges keep full precision, and the edges of the halftone bands snap to
+the tile-edge midpoints, which the dots hide. A few stray dots remain
+along some character edges, where a corner sample lands in a band.
+
 ### How other ports drew the same frames
 
 Frames 357, 2831, and 3308 (the hand reaching into light), matched in
