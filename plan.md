@@ -194,6 +194,24 @@ edges keep full precision, and the edges of the halftone bands snap to
 the tile-edge midpoints, which the dots hide. A few stray dots remain
 along some character edges, where a corner sample lands in a band.
 
+### Three levels
+
+Black, white, and one halftone at 50%, at most two levels per tile. A
+corner is black under the dark threshold (0.25), white over the light
+one (0.75), and halftone between. A cell with black and halftone corners
+splits on the dark line, halftone and white on the light line, and black
+and white on the middle line (0.5), so a hard edge stays clean. The
+single band is meant to suggest the motion blur and the glow, not to
+reproduce their detail.
+
+| Snapping, dark/middle/light | Tiles in the video |
+|---|---|
+| 1/4/1 | 167 |
+| **2/4/2** | **221** |
+| 4/4/4 | 409 |
+
+At 2/4/2 the three test frames use 107, 142, and 108 tiles.
+
 ### How other ports drew the same frames
 
 Frames 357, 2831, and 3308 (the hand reaching into light), matched in
