@@ -276,10 +276,17 @@ different pixels. Dark threshold 128, light 192:
 | Snap | Distinct tiles | Cells exact | Wrong pixels per frame against a 1/4-pixel reference, mean | Worst frame |
 |---|---|---|---|---|
 | 2/2 | 361 | 100% | 1118 | 3349 |
+| 3/3 | 862 | 99.93% | not measured | not measured |
 | 4/4 | 1446 | 99.72% | 593 | 1837 |
 | 5/5 | 2604 | 99.27% | 529 | 1637 |
 | 6/6 | 3467 | 98.98% | 486 | 1762 |
 | 8/8 | 5509 | 98.55% | 466 | 1699 |
+
+Snap 3/3 needs 862 tiles to be exact. The most used 173 tiles cover 99%
+of cells, 467 cover 99.9%, the set's 511 cover 99.93%, 719 cover 99.99%,
+and 823 cover 99.999%. A frame uses 125 distinct tiles at the median and
+316 at most (frame 1887). With the 511-tile set, a frame is off from its
+own exact tiles by 5.2 pixels on average and 68 at worst (frame 1894).
 
 Finer snapping still wins with the limit. At 8/8 a crossing can land on
 any pixel; 1.45% of cells show a stand-in tile, and the result is off by
