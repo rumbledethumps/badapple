@@ -417,9 +417,8 @@ RP6502-PICO, at 800 KB/s:
 
 | Call | Time | Sound played meanwhile |
 |---|---|---|
-| Read one video frame, 9,600 bytes | 12.0 ms | 1,536 of 4,096 bytes |
-| Read one audio buffer, 2,048 bytes | 2.6 ms | 328 bytes |
-| Both reads of a frame, back to back, 13,867 bytes | 17.3 ms | 2,219 bytes |
+| Read one video map, 4,800 bytes | 6.0 ms | 768 of 4,096 bytes |
+| Read one audio buffer, 2,400 bytes | 3.0 ms | 384 bytes |
 
 ### Encoder
 
@@ -441,9 +440,8 @@ own file position, and the device `PCM:32000,16,2`.
   it changes the canvas, so the message shows on every machine. The 0.42
   release, which CI and GitHub Pages use, shows this until the next
   release.
-- **XRAM.** Two audio buffers of 2,048 bytes (16 ms each) beside the two
-  video buffers: 4,096 bytes more, 27.4 KB in all. 2 x 4 KB also fits if
-  2 KB turns out tight.
+- **XRAM.** Two audio buffers of 2,400 bytes (19 ms each) beside the two
+  video buffers: 4,800 bytes more, 27.5 KB in all.
 - **No call blocks the loop.** The player makes its API calls itself:
   push the arguments, write `RIA.op`, then go on. Each pass of the main
   loop checks VSYNC and flips when a frame is due, as now, whether or not
@@ -451,8 +449,8 @@ own file position, and the device `PCM:32000,16,2`.
   call's result and start the next call.
 - **One call at a time.** The loop alternates a PCM write and a read. A
   PCM write sends what is left of the full audio buffer. A read fills an
-  empty audio buffer first, or else reads the next video frame, all
-  9,600 bytes in one call.
+  empty audio buffer first, or else reads the next map of the next video
+  frame, 4,800 bytes, so an audio read can come between the two maps.
 - **Video** keeps the static VSYNC count: two changes per frame, then a
   flip, if the back buffer is complete. A slow frame still catches up.
 - **Start.** Load frame 0 and both audio buffers, then at a VSYNC show

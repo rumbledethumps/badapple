@@ -100,7 +100,7 @@ static void start_pcm(void)
 }
 
 /* A PCM write every other call. Between them, fill an empty audio buffer,
- * or else load the next frame. */
+ * or else load the next map of the next frame, one map per call. */
 static void start_next_call(void)
 {
     bool pcm_ready = audio_len[audio_play] != 0;
@@ -116,7 +116,7 @@ static void start_next_call(void)
                    AUDIO_BYTES, audio_fd);
     else if (next < frames && video_got < FRAME_BYTES)
         start_call(CALL_VIDEO, RIA_OP_READ_XRAM, XRAM_MAPS + back * FRAME_BYTES + video_got,
-                   FRAME_BYTES - video_got, video_fd);
+                   MAP_BYTES - video_got % MAP_BYTES, video_fd);
     else if (pcm_ready)
         start_pcm();
 }

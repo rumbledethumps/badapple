@@ -102,14 +102,14 @@ with the soundtrack.
 - **Double buffering.** XRAM holds two buffers of both maps. While one
   buffer is on screen, `read_xram()` reads the next frame's 9,600 bytes
   from the ROM straight into the other.
-- **Sound.** XRAM also holds two 2,048-byte audio buffers. `read_xram()`
+- **Sound.** XRAM also holds two 2,400-byte audio buffers. `read_xram()`
   fills them from `ROM:audio`, and `write_xram()` sends them on to the PCM
   device, so the samples never pass through 6502 RAM.
 - **No waiting on calls.** The player starts each API call itself, through
   the RIA registers, and goes on with its loop while the call runs. When
   `RIA.busy` clears, it takes the result and starts the next call: a PCM
-  write every other time, and in between a read, an empty audio buffer
-  first, or else the next frame.
+  write every other time, and in between a read: an empty audio buffer
+  first, or else the next 4,800-byte map of the next frame.
 - **VSYNC.** The display runs at 60 Hz, so a frame lasts two VSYNCs. The
   player keeps the last VSYNC count in a static, counts each change of
   the VSYNC register, and after two shows the next frame, whether or not
@@ -149,8 +149,8 @@ bytes per second. An RP6502-PICO moves up to 800 KB per second from a file
 to XRAM.
 
 The PCM device plays from a 4,096-byte buffer, 32 ms of this sound. The
-longest call the player makes is a 9,600-byte frame read, 12 ms on an
-RP6502-PICO, so the device always has sound to play.
+player reads each frame in two calls, one 4,800-byte map each, 6 ms on an
+RP6502-PICO, so an audio read can come between them.
 
 ## Building
 

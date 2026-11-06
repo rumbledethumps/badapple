@@ -57,7 +57,7 @@ typedef struct
 #define FRAME_BYTES (2 * MAP_BYTES)
 
 /* Sound goes from ROM:audio into two audio buffers, and from them to PCM:. */
-#define AUDIO_BYTES 2048
+#define AUDIO_BYTES 2400
 
 typedef struct
 {
