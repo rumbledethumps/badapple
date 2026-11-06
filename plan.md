@@ -457,10 +457,11 @@ own file position, and the device `PCM:32000,16,2`.
   flip, if the back buffer is complete. A slow frame still catches up.
 - **Start.** Load frame 0 and both audio buffers, then at a VSYNC show
   frame 0 and write the first audio. Sound and picture start together.
-- **Loop.** At the end of the video, both files go back to the start,
-  `lseek(pcm, 0, SEEK_SET)` empties the device, and playback starts
-  again as at the start, so sound and picture are back in sync on every
-  pass. Over one 3:39 pass, the clocks cannot drift enough to hear.
+- **Loop.** At the end of the video, the rest of the sound plays out
+  (`syncfs()` waits for it), both files go back to the start, and
+  playback starts again as at the start, so sound and picture are back in
+  sync on every pass. Over one 3:39 pass, the clocks cannot drift enough
+  to hear.
 
 ### Tests
 

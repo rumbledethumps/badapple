@@ -143,7 +143,6 @@ static bool start_pass(void)
     if (lseek(video_fd, HEADER_BYTES, SEEK_SET) < 0 || lseek(audio_fd, 0, SEEK_SET) < 0 ||
         !load(video_fd, XRAM_MAPS + first * FRAME_BYTES, FRAME_BYTES))
         return false;
-    lseek(pcm_fd, 0, SEEK_SET);
     for (i = 0; i < 2; i++)
     {
         int n = read_xram(XRAM_AUDIO + i * AUDIO_BYTES, AUDIO_BYTES, audio_fd);
