@@ -40,7 +40,7 @@ rp6502_executable(badapple DATA default RESET default)
 # The web player shows the footer with links to GitHub, the ROM, and the
 # Picocomputer site under it.
 rp6502_web(badapple CONFIG [[
-    footer: 'Bad Apple!! by ZUN, arranged by Masayoshi Minoshima, sung by nomico (Alstroemeria Records). Shadow art by Anira and team, from the storyboard by Μμ.',
+    footer: 'Bad Apple!! by ZUN, Alstroemeria Records, and Anira.',
 ]])
 target_sources(badapple PRIVATE
     src/main.c
