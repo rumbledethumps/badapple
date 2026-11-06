@@ -5,8 +5,9 @@ The Bad Apple!! shadow-art video on the
 30 fps, as 640x480 black-and-white tiles. This is a port of other people's
 work, so the project claims none of it. The credits are below.
 
-The video plays today. The soundtrack waits on PCM audio for the RP6502,
-which is in progress. The plan for it is under [The audio](#the-audio).
+The soundtrack plays through the PCM audio device of the RP6502 release
+after 0.42. On older versions the player prints `No PCM device found.` and
+stops, and so does the web player below until that release.
 
 <!-- rp6502
 preset: llvm-mos/Release
@@ -71,7 +72,7 @@ border counts four times. A small error inside a tile is hard to see, but
 a step in an outline where two tiles meet is easy to see. On average a
 frame is off from its exact tiles by about 6 of its 307,200 pixels.
 
-`src/encode.py` writes two files, and packs them into
+`src/encode.py` writes three files, and packs them into
 `src/badapple.tar.xz` for the build:
 
 - `tiles.bin`, 4096 bytes: the 256 bottom tiles, then the 256 top tiles,
@@ -82,33 +83,49 @@ frame is off from its exact tiles by about 6 of its 307,200 pixels.
   the 80x60 top map, one tile number per byte. That is 9,600 bytes per
   frame, 288,000 bytes per second, and 63.1 MB for the whole video. The ROM
   carries it as the named asset `ROM:video`.
+- `audio.bin`: the soundtrack, as described under [The audio](#the-audio),
+  cut to the exact length of the video, 28,044,800 bytes. The ROM carries
+  it as the named asset `ROM:audio`.
 
-The archive is 2.2 MB, and Git keeps it, so the build needs no source video
-and no encoder. After writing the files, the encoder draws every frame back
+The archive is 29.2 MB, and Git keeps it, so the build needs no source
+video and no encoder. After writing the files, the encoder draws every frame back
 from them, the way the two layers do, and checks that each one comes out as
 encoded. It also writes `preview.mp4` in `data/encoded/`, the encoded frames
 with the soundtrack.
 
 ## The player
 
-`src/main.c` plays `ROM:video` in a loop:
+`src/main.c` plays `ROM:video` and `ROM:audio` in a loop:
 
+- **PCM first.** The player opens `PCM:32000,16,2` before anything else.
+  When it cannot, it prints `No PCM device found.` and stops.
 - **Double buffering.** XRAM holds two buffers of both maps. While one
   buffer is on screen, `read_xram()` reads the next frame's 9,600 bytes
   from the ROM straight into the other.
+- **Sound.** XRAM also holds two 2,048-byte audio buffers. `read_xram()`
+  fills them from `ROM:audio`, and `write_xram()` sends them on to the PCM
+  device, so the samples never pass through 6502 RAM.
+- **No waiting on calls.** The player starts each API call itself, through
+  the RIA registers, and goes on with its loop while the call runs. When
+  `RIA.busy` clears, it takes the result and starts the next call: a PCM
+  write every other time, and in between a read, an empty audio buffer
+  first, or else the next frame.
 - **VSYNC.** The display runs at 60 Hz, so a frame lasts two VSYNCs. The
-  player keeps the VSYNC count that it last waited for in a static, waits
-  for the count to change twice, then points both layers at the new
-  buffer.
+  player keeps the last VSYNC count in a static, counts each change of
+  the VSYNC register, and after two shows the next frame, whether or not
+  a call is running.
 - **Catching up.** When a frame runs long, VSYNC has already moved past the
-  stored count, so the waits return at once and the video catches up
-  instead of stretching. The player prints `Loop` and a count after each
-  pass.
+  stored count, so the next frame shows as soon as it is loaded and the
+  video catches up instead of stretching.
+- **Each pass starts in sync.** Frame 0 and both audio buffers load, then
+  frame 0 shows at a VSYNC and the sound starts right after it. At the
+  end, the player sends the rest of the sound, waits for it to play, prints
+  `Loop` and a count, and starts the next pass the same way.
 
 ## The audio
 
 The soundtrack is the audio of the same Niconico upload: AAC-LC, 44.1 kHz,
-stereo, about 113 kbps. The port will play it as raw PCM at **32 kHz,
+stereo, about 113 kbps. The player plays it as raw PCM at **32 kHz,
 stereo, 16 bits**.
 
 - **It is real stereo.** The two channels differ in 98% of samples and
@@ -127,9 +144,13 @@ stereo, 16 bits**.
   so that its filter does not clip.
 
 At 32 kHz, stereo, and 16 bits, the soundtrack is 128,000 bytes per second
-and 28.0 MB for its 219 seconds. With the video, the player will read
-416,000 bytes per second. An RP6502-PICO moves up to 800 KB per second from
-a file to XRAM.
+and 28.0 MB for its 219 seconds. With the video, the player reads 416,000
+bytes per second. An RP6502-PICO moves up to 800 KB per second from a file
+to XRAM.
+
+The PCM device plays from a 4,096-byte buffer, 32 ms of this sound. The
+longest call the player makes is a 9,600-byte frame read, 12 ms on an
+RP6502-PICO, so the device always has sound to play.
 
 ## Building
 
@@ -142,7 +163,7 @@ cmake --build --preset llvm-mos/Release
 ```
 
 The build unpacks `src/badapple.tar.xz` into the build folder, and writes
-the 63 MB ROM to `build/llvm-mos/release/badapple/badapple.rp6502`.
+the 91 MB ROM to `build/llvm-mos/release/badapple/badapple.rp6502`.
 
 ### Encoding the video
 
@@ -162,7 +183,8 @@ to build the tile set, which the encoder caches in
 the same video and settings give the same archive, byte for byte, so Git
 sees a change only when the encoding changes.
 
-`--start 10 --seconds 5` encodes five seconds from 10.0 s, into
+`--start 10 --seconds 5` encodes five seconds from 10.0 s, video and sound,
+into
 `data/encoded/badapple.tar.xz`, so the archive in `src/` keeps the whole
 video. To build a part, add `--archive src/badapple.tar.xz`. `--help` lists
 the other options.
@@ -173,15 +195,21 @@ the other options.
   configuration, or run
   `build/llvm-mos/release/badapple/rp6502-emu build/llvm-mos/release/badapple/badapple.rp6502`.
 - **Web player.** The build also writes the web player to
-  `build/llvm-mos/release/web/badapple/`, with the 63 MB ROM. The
+  `build/llvm-mos/release/web/badapple/`, with the 91 MB ROM. The
   RP6502-WEB launch configuration serves it and opens it in a browser.
 - **Test.** `ctest --test-dir build/llvm-mos/release` runs the `play`
-  test: two seconds of playback in the emulator, which passes when the
-  player starts without an error.
+  test: two seconds in the emulator, which passes when the player finds
+  its ROM assets.
+
+Until the release with PCM audio, the emulator and the web player from the
+rp6502 CI builds play the sound. Set `RP6502_EMU` and `RP6502_WEB` to their
+files, as [Local Files](https://picocomputer.github.io/sdk.html) in the SDK
+describes, for example in a `CMakeUserPresets.json`, which Git ignores.
 
 On each push to `main`, `.github/workflows/web.yml` builds the ROM and
 publishes the web player at the top of this page to GitHub Pages. Its
-picture is the player's screen after 716 VSYNCs, frame 357.
+picture is the player's screen after 716 VSYNCs: frame 357 once the
+release with PCM audio is out, and `No PCM device found.` until then.
 
 ## Updating the tools
 

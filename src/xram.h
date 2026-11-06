@@ -56,17 +56,22 @@ typedef struct
 #define MAP_BYTES (MAP_COLS * MAP_ROWS)
 #define FRAME_BYTES (2 * MAP_BYTES)
 
+/* Sound goes from ROM:audio into two audio buffers, and from them to PCM:. */
+#define AUDIO_BYTES 2048
+
 typedef struct
 {
     uint8_t maps[2][2][MAP_BYTES];  /* [buffer][layer] */
     uint8_t tiles[2][256][8];       /* [layer], loaded from tiles.bin */
     mode2_config_t config[2];       /* [layer] */
     uint16_t palette[2][2];         /* [layer][color] */
+    uint8_t audio[2][AUDIO_BYTES];  /* [buffer] */
 } xram_layout_t;
 
 #define XRAM_MAPS offsetof(xram_layout_t, maps)
 #define XRAM_TILES offsetof(xram_layout_t, tiles)
 #define XRAM_CONFIG offsetof(xram_layout_t, config)
 #define XRAM_PALETTE offsetof(xram_layout_t, palette)
+#define XRAM_AUDIO offsetof(xram_layout_t, audio)
 
 #endif

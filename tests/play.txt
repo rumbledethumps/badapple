@@ -1,3 +1,4 @@
-# Two seconds of playback: the player starts without an error.
+# Two seconds in the emulator: the player finds ROM:video and ROM:audio.
+# Without PCM audio, it stops with "No PCM device found.", which passes too.
 run 120
-expect-not stdout "ROM:video"
+expect-not stdout "ROM:"

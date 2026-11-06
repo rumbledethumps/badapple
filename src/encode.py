@@ -16,8 +16,8 @@ layers is all black, which is transparent on the top layer. A cell shows a
 bottom tile under the top layer's tile 0, or a top tile over the bottom
 layer's tile 0.
 
-Output, in ARCHIVE, which the build unpacks: tiles.bin and video.bin,
-  below. For the whole video it is src/badapple.tar.xz, the archive the
+Output, in ARCHIVE, which the build unpacks: tiles.bin, video.bin, and
+  audio.bin, below. For the whole video it is src/badapple.tar.xz, the archive the
   build uses; for part of it, OUT/badapple.tar.xz. The archive has fixed
   times and owners, so the same video and settings give the same bytes.
 
@@ -27,6 +27,9 @@ Output, in OUT:
   video.bin    16-byte header ("BAD1", frame count, first source frame,
                fps), then per frame the 80x60 bottom map and the 80x60 top
                map, one tile ID per byte, 9600 bytes.
+  audio.bin    the soundtrack of the same span: raw PCM, 32 kHz, 16-bit
+               signed little-endian, stereo, 1 dB lower so the resampler
+               does not clip, and exactly as long as the video.
   preview.mp4  the encoded frames as the two layers draw them, with the
                soundtrack of the same span.
   tileset.npz  the 511 tiles, cached for the next run with the same
@@ -51,6 +54,8 @@ FPS = 30
 SETS = 511
 MAP_BYTES = COLS * ROWS
 FRAME_BYTES = 2 * MAP_BYTES
+AUDIO_RATE = 32000
+AUDIO_FRAME = 4  # bytes per stereo 16-bit sample pair
 
 
 # Corner samples: a box one cell wide around each of the 81x61 corners.
@@ -262,6 +267,19 @@ def write_archive(path, folder, names):
         f.write(lzma.compress(tar_bytes.getvalue(), preset=9 | lzma.PRESET_EXTREME))
 
 
+def write_audio(video, path, first, count):
+    """The soundtrack of count frames from frame first, as raw PCM."""
+    raw = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", video, "-ss", f"{first / FPS:.6f}", "-t", f"{count / FPS:.6f}",
+         "-vn", "-af", "volume=-1dB", "-ar", str(AUDIO_RATE), "-ac", "2", "-f", "s16le", "-"],
+        capture_output=True, check=True).stdout
+    size = round(count * AUDIO_RATE / FPS) * AUDIO_FRAME
+    raw = raw[:size] + bytes(max(0, size - len(raw)))
+    with open(path, "wb") as f:
+        f.write(raw)
+    return size
+
+
 def layer_of(index):
     """Set index to (bottom ID, top ID). Index 0 is the shared black tile."""
     if index == 0:
@@ -354,7 +372,9 @@ def main():
           f"{stand_in_cells} of {count * MAP_BYTES} cells use a stand-in tile; "
           f"{len(match.stand_ins)} distinct stand-ins")
     print(f"Wrote tiles.bin and video.bin ({16 + count * FRAME_BYTES:,} bytes) to {args.out}")
-    write_archive(args.archive, args.out, ["tiles.bin", "video.bin"])
+    audio_bytes = write_audio(args.video, os.path.join(args.out, "audio.bin"), first, count)
+    print(f"Wrote audio.bin ({audio_bytes:,} bytes) to {args.out}")
+    write_archive(args.archive, args.out, ["tiles.bin", "video.bin", "audio.bin"])
     print(f"Wrote {args.archive} ({os.path.getsize(args.archive):,} bytes)")
     if set_seconds is not None:
         total = 6573

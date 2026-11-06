@@ -373,7 +373,7 @@ frame 357.
   Floyd-Steinberg, it looks far worse than the 640x480 marching-squares
   tiles, which stay.
 
-## Step 4: audio (plan, for review)
+## Step 4: audio
 
 ### Tools
 
@@ -469,3 +469,18 @@ own file position, and the device `PCM:32000,16,2`.
 - With the `audio` preset, a second short test records two seconds with
   the emulator script's `wav` command and checks that it matches the
   start of `audio.bin`, to catch gaps, offsets, or wrong format.
+
+### Results
+
+Built and run with the `audio` preset:
+
+- `audio.bin` is 28,044,800 bytes, and `src/badapple.tar.xz` 29.2 MB. The
+  ROM is 91.2 MB.
+- Three seconds recorded with the emulator's `wav` command, from 1 s in,
+  match `audio.bin` from 984 ms: correlation 0.99 in both channels, level
+  ratio 1.008, and no silence where the source has sound. So the sound
+  starts one VSYNC after the emulator does, with frame 0.
+- After 240 VSYNCs, the screen is frame 119, pixel for pixel: on time with
+  sound playing.
+- The 0.42 release emulator prints `No PCM device found.`
+- The `play` test passes on both presets.
