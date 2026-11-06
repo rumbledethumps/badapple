@@ -409,20 +409,27 @@ From `ria.rst`, PCM Sampled Sound:
 | Audio per video frame (30 fps) | 4,267 |
 | Video per frame | 9,600 |
 | Both, per second | 416,000 (RP6502-PICO: up to 800 KB/s) |
-| PCM device buffer | 4,096 = **32 ms** of sound |
+| PCM device buffer | 4,096 = 32 ms of sound |
 | ROM with audio | 63.1 MB + 28.0 MB = 91.1 MB |
 
-The device holds only 32 ms, two VSYNCs of sound, so the player must top
-it up every few milliseconds, all through playback.
+The device buffer covers every call the loop waits on. On an
+RP6502-PICO, at 800 KB/s:
+
+| Call | Time | Sound played meanwhile |
+|---|---|---|
+| Read one video frame, 9,600 bytes | 12.0 ms | 1,536 of 4,096 bytes |
+| Read one audio buffer, 2,048 bytes | 2.6 ms | 328 bytes |
+| Both reads of a frame, back to back, 13,867 bytes | 17.3 ms | 2,219 bytes |
 
 ### Encoder
 
 `src/encode.py` adds `audio.bin`: the soundtrack of the encoded span,
 resampled by ffmpeg to 32 kHz, stereo, 16-bit, 1 dB lower so the
 resampler does not clip. It is cut to exactly the video's length,
-6573 / 30 s = 7,011,200 sample pairs, 28,044,800 bytes, so audio and video
-loop at the same point. (The source audio runs 33 ms longer than the
-video.)
+6573 / 30 s = 7,011,200 sample pairs, 28,044,800 bytes. (The source audio
+runs 33 ms longer than the video.) It goes into `src/badapple.tar.xz` with
+the video, plain xz like the rest: the archive grows to about 29 MB, and
+CI builds the ROM with sound.
 
 ### Player
 
@@ -442,17 +449,18 @@ own file position, and the device `PCM:32000,16,2`.
   loop checks VSYNC and flips when a frame is due, as now, whether or not
   a call is running. Only when `RIA.busy` is clear does it read the
   call's result and start the next call.
-- **One call at a time,** so the order matters. The loop alternates: a
-  PCM write, then a read, then a PCM write. A PCM write sends what is
-  left of the audio buffer that is full. A read fills an empty audio
-  buffer first, or else the next chunk of the next video frame. Video
-  reads go in chunks of 2,400 bytes, about 3 ms each on an RP6502-PICO,
-  so the device is never more than one chunk from a top-up.
+- **One call at a time.** The loop alternates a PCM write and a read. A
+  PCM write sends what is left of the full audio buffer. A read fills an
+  empty audio buffer first, or else reads the next video frame, all
+  9,600 bytes in one call.
 - **Video** keeps the static VSYNC count: two changes per frame, then a
   flip, if the back buffer is complete. A slow frame still catches up.
 - **Start.** Load frame 0 and both audio buffers, then at a VSYNC show
   frame 0 and write the first audio. Sound and picture start together.
-- **Loop.** At the end of the video, both files go back to the start.
+- **Loop.** At the end of the video, both files go back to the start,
+  `lseek(pcm, 0, SEEK_SET)` empties the device, and playback starts
+  again as at the start, so sound and picture are back in sync on every
+  pass. Over one 3:39 pass, the clocks cannot drift enough to hear.
 
 ### Tests
 
@@ -461,19 +469,3 @@ own file position, and the device `PCM:32000,16,2`.
 - With the `audio` preset, a second short test records two seconds with
   the emulator script's `wav` command and checks that it matches the
   start of `audio.bin`, to catch gaps, offsets, or wrong format.
-
-### Holes to settle
-
-1. **Audio in Git.** CI needs `audio.bin` to publish it, and audio barely
-   compresses: 28.0 MB raw, 27.0 MB with xz, 24.8 MB with xz and a delta
-   filter (CMake's tar unpacks both). FLAC makes 20.4 MB, but the build
-   cannot unpack it without ffmpeg or flac. Proposal: keep audio local in
-   `data/encoded/` for stage 1, since CI cannot play it on 0.42 anyway,
-   and commit it with the delta filter for stage 2, after the release.
-2. **Clock drift.** Video follows VSYNC and audio follows the device's
-   sample clock. On an RP6502-PICO they should differ by milliseconds
-   over the song; the `wav` recording can measure it in the emulator.
-   If it grows, the video can take its time from the audio instead.
-3. **Buffer size.** 2 x 2 KB staging plus the device's 4 KB is 64 ms of
-   sound in flight. That is enough if no call runs longer than a few
-   milliseconds, which the 2,400-byte video chunks are for.
