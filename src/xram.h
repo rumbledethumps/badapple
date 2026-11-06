@@ -49,29 +49,35 @@ typedef struct
 
 /* Bad Apple!! on two 80x60 maps of 8x8 1bpp tiles, a 640x480 canvas.
  * Layer 0 (plane 0) is the bottom map, layer 1 (plane 1) the top map. Tile 0
- * of both is all black, and black is transparent on the top layer. */
+ * of both is all black, and black is transparent on the top layer.
+ *
+ * Each frame is a record in ROM:frames: the two maps, then the frame's
+ * sound, 1,027 samples of 30,810 Hz 16-bit stereo. */
 
 #define MAP_COLS 80
 #define MAP_ROWS 60
 #define MAP_BYTES (MAP_COLS * MAP_ROWS)
 #define FRAME_BYTES (2 * MAP_BYTES)
-
-/* Sound goes from ROM:audio into two audio buffers, and from them to PCM:. */
-#define AUDIO_BYTES 2400
+#define SOUND_BYTES 4108
+#define RECORD_BYTES (FRAME_BYTES + SOUND_BYTES)
 
 typedef struct
 {
-    uint8_t maps[2][2][MAP_BYTES];  /* [buffer][layer] */
-    uint8_t tiles[2][256][8];       /* [layer], loaded from tiles.bin */
-    mode2_config_t config[2];       /* [layer] */
-    uint16_t palette[2][2];         /* [layer][color] */
-    uint8_t audio[2][AUDIO_BYTES];  /* [buffer] */
+    uint8_t maps[2][MAP_BYTES];  /* [layer] */
+    uint8_t sound[SOUND_BYTES];
+} record_t;
+
+typedef struct
+{
+    uint8_t tiles[2][256][8];  /* [layer], loaded from tiles.bin */
+    mode2_config_t config[2];  /* [layer] */
+    uint16_t palette[2][2];    /* [layer][color] */
+    record_t records[3];       /* [buffer] */
 } xram_layout_t;
 
-#define XRAM_MAPS offsetof(xram_layout_t, maps)
 #define XRAM_TILES offsetof(xram_layout_t, tiles)
 #define XRAM_CONFIG offsetof(xram_layout_t, config)
 #define XRAM_PALETTE offsetof(xram_layout_t, palette)
-#define XRAM_AUDIO offsetof(xram_layout_t, audio)
+#define XRAM_RECORDS offsetof(xram_layout_t, records)
 
 #endif

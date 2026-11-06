@@ -1,8 +1,6 @@
 # Bad Apple!! on the Picocomputer 6502
 
 A port of the Bad Apple!! shadow-art video and its music to the RP6502.
-It is a mechanical port of other people's work, so the project takes no
-credit, and the credits below go with it.
 
 ## Step 1: Provenance
 
@@ -483,3 +481,38 @@ Built and run with the `audio` preset:
   sound playing.
 - The 0.42 release emulator prints `No PCM device found.`
 - The `play` test passes on both presets.
+
+### On the hardware
+
+Run on an RP6502-PICO with the test build, `-DBADAPPLE_TEST=ON`, which
+reads the frames from the machine's USB drive instead of the ROM.
+
+- **Small reads were too slow.** A call costs a few milliseconds beyond its
+  bytes, so 4,800-byte map reads and 2,400-byte audio reads came to
+  406 KB/s, short of the 416 KB/s needed, and the video ran at half speed.
+- **One file.** The encoder now writes `frames.bin`: a record per frame,
+  the two maps and then the frame's sound, so picture and sound come in
+  together, in large reads, from one file position.
+- **Half-record reads.** Nothing feeds the PCM device during a read, and
+  its buffer lasts 33 ms. A whole record took 26 ms on average and up to
+  37 ms, and the sound dropped out. So the player reads each record in two
+  halves, about 15 ms each, and fills the device before every read.
+- **Triple buffering.** XRAM holds three records: the frame on screen and
+  up to two loaded ahead.
+- **Flips at VSYNC only.** A frame that was late showed as soon as its
+  read finished, partway down the screen, and tore. Now a frame shows only
+  at a VSYNC, and a late one waits for the next.
+- **30,810 Hz.** Twice the 15.4 kHz that survives in the source is
+  30.8 kHz, and 30,810 Hz is the next rate with a whole number of samples
+  a frame, 1,027. Every record is then 13,708 bytes, and the player reads
+  411,240 bytes per second.
+
+Measured over 10 s, with the 32 kHz encoding before the last change:
+
+| | |
+|---|---|
+| VSYNC, as the loop saw it | every 16,374-16,934 µs, against 16,667 |
+| Reads | 603, at 460 kB/s, 91% of the time |
+| Overall | 418 kB/s, 416 kB/s needed |
+| Frames loaded ahead at each frame change | two 240 times, one 60 times, none 0 |
+| Fewest bytes in the PCM device | 360, 2.8 ms of sound |

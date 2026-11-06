@@ -16,20 +16,24 @@ layers is all black, which is transparent on the top layer. A cell shows a
 bottom tile under the top layer's tile 0, or a top tile over the bottom
 layer's tile 0.
 
-Output, in ARCHIVE, which the build unpacks: tiles.bin, video.bin, and
-  audio.bin, below. For the whole video it is src/badapple.tar.xz, the archive the
+Output, in ARCHIVE, which the build unpacks: tiles.bin and frames.bin,
+  below. For the whole video it is src/badapple.tar.xz, the archive the
   build uses; for part of it, OUT/badapple.tar.xz. The archive has fixed
   times and owners, so the same video and settings give the same bytes.
 
 Output, in OUT:
   tiles.bin    4096 bytes: 256 bottom tiles, then 256 top tiles, 8 bytes
                each, one byte per row, leftmost pixel in the high bit.
-  video.bin    16-byte header ("BAD1", frame count, first source frame,
-               fps), then per frame the 80x60 bottom map and the 80x60 top
-               map, one tile ID per byte, 9600 bytes.
-  audio.bin    the soundtrack of the same span: raw PCM, 32 kHz, 16-bit
-               signed little-endian, stereo, 1 dB lower so the resampler
-               does not clip, and exactly as long as the video.
+  frames.bin   16-byte header ("BAD2", frame count, first source frame,
+               fps), then a 13,708-byte record per frame, so the player
+               reads a frame and its sound together: the 80x60 bottom map
+               and the 80x60 top map, one tile ID per byte, 9600 bytes, then
+               the frame's sound, 1027 samples, 4108 bytes. The sound is raw
+               PCM, 30,810 Hz, 16-bit signed little-endian, stereo, 1 dB
+               lower so the resampler does not clip. Niconico's AAC encoder
+               kept nothing above about 15.4 kHz, and a rate carries up to
+               half of itself, so 30.8 kHz carries it all; 30,810 Hz is the
+               next rate with a whole number of samples a frame.
   preview.mp4  the encoded frames as the two layers draw them, with the
                soundtrack of the same span.
   tileset.npz  the 511 tiles, cached for the next run with the same
@@ -54,8 +58,11 @@ FPS = 30
 SETS = 511
 MAP_BYTES = COLS * ROWS
 FRAME_BYTES = 2 * MAP_BYTES
-AUDIO_RATE = 32000
+AUDIO_RATE = 30810
 AUDIO_FRAME = 4  # bytes per stereo 16-bit sample pair
+assert AUDIO_RATE % FPS == 0, "a whole number of samples a frame"
+SOUND_BYTES = AUDIO_RATE // FPS * AUDIO_FRAME  # 4108
+RECORD_BYTES = FRAME_BYTES + SOUND_BYTES
 
 
 # Corner samples: a box one cell wide around each of the 81x61 corners.
@@ -267,17 +274,19 @@ def write_archive(path, folder, names):
         f.write(lzma.compress(tar_bytes.getvalue(), preset=9 | lzma.PRESET_EXTREME))
 
 
-def write_audio(video, path, first, count):
+def read_audio(video, first, count):
     """The soundtrack of count frames from frame first, as raw PCM."""
     raw = subprocess.run(
         ["ffmpeg", "-v", "error", "-i", video, "-ss", f"{first / FPS:.6f}", "-t", f"{count / FPS:.6f}",
          "-vn", "-af", "volume=-1dB", "-ar", str(AUDIO_RATE), "-ac", "2", "-f", "s16le", "-"],
         capture_output=True, check=True).stdout
-    size = round(count * AUDIO_RATE / FPS) * AUDIO_FRAME
-    raw = raw[:size] + bytes(max(0, size - len(raw)))
-    with open(path, "wb") as f:
-        f.write(raw)
-    return size
+    size = count * SOUND_BYTES
+    return raw[:size] + bytes(max(0, size - len(raw)))
+
+
+def frame_audio(audio, n):
+    """Frame n's slice of the soundtrack."""
+    return audio[n * SOUND_BYTES:(n + 1) * SOUND_BYTES]
 
 
 def layer_of(index):
@@ -350,18 +359,22 @@ def main():
     count = len(maps)
     encode_seconds = time.time() - t1
 
-    with open(os.path.join(args.out, "video.bin"), "wb") as f:
-        f.write(b"BAD1" + struct.pack("<HHB", count, first, FPS) + bytes(7))
-        for m in maps:
-            f.write(m)
+    audio = read_audio(args.video, first, count)
+    with open(os.path.join(args.out, "frames.bin"), "wb") as f:
+        f.write(b"BAD2" + struct.pack("<HHB", count, first, FPS) + bytes(7))
+        for n, m in enumerate(maps):
+            f.write(m + frame_audio(audio, n))
 
     # Draw the layers back from the files: every frame must come out as encoded.
     tiles = np.frombuffer(open(os.path.join(args.out, "tiles.bin"), "rb").read(), np.uint8).reshape(2, 256, 8)
     layer_px = np.unpackbits(tiles, axis=2).reshape(2, 256, TILE, TILE).astype(bool)  # [layer][id][y][x]
-    data = open(os.path.join(args.out, "video.bin"), "rb").read()[16:]
+    data = open(os.path.join(args.out, "frames.bin"), "rb").read()[16:]
+    assert len(data) == count * RECORD_BYTES
+    assert b"".join(data[n * RECORD_BYTES + FRAME_BYTES:(n + 1) * RECORD_BYTES]
+                    for n in range(count)) == audio, "the sound differs"
     canvas = []
     for n in range(count):
-        m = np.frombuffer(data, np.uint8, FRAME_BYTES, n * FRAME_BYTES).reshape(2, ROWS, COLS)
+        m = np.frombuffer(data, np.uint8, FRAME_BYTES, n * RECORD_BYTES).reshape(2, ROWS, COLS)
         cells = layer_px[0][m[0]] | layer_px[1][m[1]]                      # [row][col][y][x]
         img = cells.transpose(0, 2, 1, 3).reshape(ROWS * TILE, COLS * TILE)
         want = tile_pixels(shown[n]).reshape(ROWS, COLS, TILE, TILE).transpose(0, 2, 1, 3)
@@ -371,10 +384,8 @@ def main():
     print(f"Encoded {count} frames from frame {first} ({first / FPS:.2f} s) in {encode_seconds:.1f} s; "
           f"{stand_in_cells} of {count * MAP_BYTES} cells use a stand-in tile; "
           f"{len(match.stand_ins)} distinct stand-ins")
-    print(f"Wrote tiles.bin and video.bin ({16 + count * FRAME_BYTES:,} bytes) to {args.out}")
-    audio_bytes = write_audio(args.video, os.path.join(args.out, "audio.bin"), first, count)
-    print(f"Wrote audio.bin ({audio_bytes:,} bytes) to {args.out}")
-    write_archive(args.archive, args.out, ["tiles.bin", "video.bin", "audio.bin"])
+    print(f"Wrote tiles.bin and frames.bin ({16 + count * RECORD_BYTES:,} bytes) to {args.out}")
+    write_archive(args.archive, args.out, ["tiles.bin", "frames.bin"])
     print(f"Wrote {args.archive} ({os.path.getsize(args.archive):,} bytes)")
     if set_seconds is not None:
         total = 6573

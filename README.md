@@ -2,8 +2,7 @@
 
 The Bad Apple!! shadow-art video on the
 [Picocomputer 6502](https://picocomputer.github.io/), all 6573 frames at
-30 fps, as 640x480 black-and-white tiles. This is a port of other people's
-work, so the project claims none of it. The credits are below.
+30 fps, as 640x480 black-and-white tiles.
 
 The soundtrack plays through the PCM audio device of the RP6502 release
 after 0.42. On older versions the player prints `No PCM device found.` and
@@ -72,22 +71,22 @@ border counts four times. A small error inside a tile is hard to see, but
 a step in an outline where two tiles meet is easy to see. On average a
 frame is off from its exact tiles by about 6 of its 307,200 pixels.
 
-`src/encode.py` writes three files, and packs them into
+`src/encode.py` writes two files, and packs them into
 `src/badapple.tar.xz` for the build:
 
 - `tiles.bin`, 4096 bytes: the 256 bottom tiles, then the 256 top tiles,
   8 bytes each, one byte per row, leftmost pixel in the high bit. The ROM
   loads it into XRAM before the program starts.
-- `video.bin`: a 16-byte header (`BAD1`, the frame count, the first source
-  frame, and the frame rate), then for each frame the 80x60 bottom map and
-  the 80x60 top map, one tile number per byte. That is 9,600 bytes per
-  frame, 288,000 bytes per second, and 63.1 MB for the whole video. The ROM
-  carries it as the named asset `ROM:video`.
-- `audio.bin`: the soundtrack, as described under [The audio](#the-audio),
-  cut to the exact length of the video, 28,044,800 bytes. The ROM carries
-  it as the named asset `ROM:audio`.
+- `frames.bin`: a 16-byte header (`BAD2`, the frame count, the first
+  source frame, and the frame rate), then a 13,708-byte record for each
+  frame: the 80x60 bottom map and the 80x60 top map, one tile number per
+  byte, 9,600 bytes, then the frame's sound, 4,108 bytes, as described
+  under [The audio](#the-audio). With picture and sound in one record, the
+  player reads them together, in large reads, from one file position.
+  That is 411,240 bytes per second, and 90.1 MB for the whole video. The
+  ROM carries it as the named asset `ROM:frames`.
 
-The archive is 29.2 MB, and Git keeps it, so the build needs no source
+The archive is 28.3 MB, and Git keeps it, so the build needs no source
 video and no encoder. After writing the files, the encoder draws every frame back
 from them, the way the two layers do, and checks that each one comes out as
 encoded. It also writes `preview.mp4` in `data/encoded/`, the encoded frames
@@ -95,47 +94,59 @@ with the soundtrack.
 
 ## The player
 
-`src/main.c` plays `ROM:video` and `ROM:audio` in a loop:
+`src/main.c` plays `ROM:frames` in a loop:
 
-- **PCM first.** The player opens `PCM:32000,16,2` before anything else.
+- **PCM first.** The player opens `PCM:30810,16,2` before anything else.
   When it cannot, it prints `No PCM device found.` and stops.
-- **Double buffering.** XRAM holds two buffers of both maps. While one
-  buffer is on screen, `read_xram()` reads the next frame's 9,600 bytes
-  from the ROM straight into the other.
-- **Sound.** XRAM also holds two 2,400-byte audio buffers. `read_xram()`
-  fills them from `ROM:audio`, and `write_xram()` sends them on to the PCM
-  device, so the samples never pass through 6502 RAM.
+- **Triple buffering.** XRAM holds three records. One is on screen, and
+  `read_xram()` loads up to two frames ahead of it, straight from the ROM,
+  so one slow read does not hold up the picture.
+- **VSYNC.** A frame is shown by pointing both layers at its maps. The
+  display runs at 60 Hz, so a frame lasts two VSYNCs. The player keeps the
+  last VSYNC count in a static, and at every second change it shows the
+  next frame right away, in the 1.4 ms before the first scanline, so the
+  picture never tears.
+- **Catching up.** A frame that is not loaded by its VSYNC shows at the
+  next one, and the frame after it one VSYNC sooner, so the video catches
+  up instead of stretching.
+- **Sound.** `write_xram()` sends each record's sound from XRAM to the PCM
+  device, in order, so the samples never pass through 6502 RAM. A buffer
+  loads again only once all of its sound has gone to the device.
 - **No waiting on calls.** The player starts each API call itself, through
-  the RIA registers, and goes on with its loop while the call runs. When
-  `RIA.busy` clears, it takes the result and starts the next call: a PCM
-  write every other time, and in between a read: an empty audio buffer
-  first, or else the next 4,800-byte map of the next frame.
-- **VSYNC.** The display runs at 60 Hz, so a frame lasts two VSYNCs. The
-  player keeps the last VSYNC count in a static, counts each change of
-  the VSYNC register, and after two shows the next frame, whether or not
-  a call is running.
-- **Catching up.** When a frame runs long, VSYNC has already moved past the
-  stored count, so the next frame shows as soon as it is loaded and the
-  video catches up instead of stretching.
-- **Each pass starts in sync.** Frame 0 and both audio buffers load, then
-  frame 0 shows at a VSYNC and the sound starts right after it. At the
-  end, the player sends the rest of the sound, waits for it to play, prints
-  `Loop` and a count, and starts the next pass the same way.
+  the RIA registers, and goes on with its loop, watching VSYNC, while the
+  call runs. When `RIA.busy` clears, it takes the result and starts the
+  next call.
+- **Feeding the device.** Nothing feeds the PCM device during a read, and
+  its 4,096-byte buffer plays for 33 ms. So the player fills the device
+  before every read, and at every VSYNC, and reads each record in two
+  halves, about 15 ms each on an RP6502-PICO.
+- **Each pass starts in sync.** Frame 0 loads, then shows at a VSYNC, and
+  its sound starts right after it. At the end, the player sends the rest
+  of the sound, waits for it to play, and starts the next pass the same
+  way.
+
+Measured on an RP6502-PICO, reading from its USB drive, with an earlier
+32 kHz encoding: reads ran at 460 kB/s and took 91% of the time. At 80% of
+the frame changes, both spare buffers were loaded, at the rest one, and
+never none. The PCM device never fell below 360 bytes, 2.8 ms of sound.
 
 ## The audio
 
 The soundtrack is the audio of the same Niconico upload: AAC-LC, 44.1 kHz,
-stereo, about 113 kbps. The player plays it as raw PCM at **32 kHz,
+stereo, about 113 kbps. The player plays it as raw PCM at **30,810 Hz,
 stereo, 16 bits**.
 
 - **It is real stereo.** The two channels differ in 98% of samples and
   correlate at 0.91. Their difference averages 13 dB below their sum, and
   comes within about 3 dB of it in the widest passages.
-- **32 kHz holds everything in the file.** Niconico's AAC encoder removed
-  everything above about 15.4 kHz: the average spectrum falls from −49 dB at
-  15 kHz to −75 dB at 15.5 kHz, and stays at the noise floor from there to
-  22 kHz. A sample rate covers frequencies up to half its value, so 32 kHz
-  carries up to 16 kHz, which is all that survived. The arrangement was
+- **30.8 kHz holds everything in the file.** Niconico's AAC encoder
+  removed everything above about 15.4 kHz: the average spectrum falls from
+  −49 dB at 15 kHz to −75 dB at 15.5 kHz, and stays at the noise floor from
+  there to 22 kHz. A sample rate covers frequencies up to half its value,
+  so 30.8 kHz carries all that survived. 30,810 Hz is the next rate up
+  with a whole number of samples in each frame, 1,027, so every record
+  holds the same amount of sound. The PCM device takes any rate up to
+  48 kHz. The arrangement was
   released on CD at 44.1 kHz, but the detail above 15.4 kHz is gone from
   every copy that this port can use. A rate of 24 kHz or less would start
   to cut real content between 11 and 15 kHz, the cymbals and hi-hats.
@@ -143,14 +154,10 @@ stereo, 16 bits**.
   and its peaks reach full scale. The resampler lowers the gain about 1 dB,
   so that its filter does not clip.
 
-At 32 kHz, stereo, and 16 bits, the soundtrack is 128,000 bytes per second
-and 28.0 MB for its 219 seconds. With the video, the player reads 416,000
-bytes per second. An RP6502-PICO moves up to 800 KB per second from a file
-to XRAM.
-
-The PCM device plays from a 4,096-byte buffer, 32 ms of this sound. The
-player reads each frame in two calls, one 4,800-byte map each, 6 ms on an
-RP6502-PICO, so an audio read can come between them.
+At 30,810 Hz, stereo, and 16 bits, the soundtrack is 123,240 bytes per
+second and 27.0 MB for its 219 seconds. With the video, the player reads
+411,240 bytes per second. An RP6502-PICO moves up to 800 KB per second
+from a file to XRAM.
 
 ## Building
 
@@ -163,7 +170,7 @@ cmake --build --preset llvm-mos/Release
 ```
 
 The build unpacks `src/badapple.tar.xz` into the build folder, and writes
-the 91 MB ROM to `build/llvm-mos/release/badapple/badapple.rp6502`.
+the 90 MB ROM to `build/llvm-mos/release/badapple/badapple.rp6502`.
 
 ### Encoding the video
 
@@ -195,11 +202,15 @@ the other options.
   configuration, or run
   `build/llvm-mos/release/badapple/rp6502-emu build/llvm-mos/release/badapple/badapple.rp6502`.
 - **Web player.** The build also writes the web player to
-  `build/llvm-mos/release/web/badapple/`, with the 91 MB ROM. The
+  `build/llvm-mos/release/web/badapple/`, with the 90 MB ROM. The
   RP6502-WEB launch configuration serves it and opens it in a browser.
 - **Test.** `ctest --test-dir build/llvm-mos/release` runs the `play`
   test: two seconds in the emulator, which passes when the player finds
   its ROM assets.
+- **On a machine.** The 90 MB ROM is slow to send to a machine over its
+  console, so `-DBADAPPLE_TEST=ON` builds a small ROM that reads
+  `frames.bin` from the current directory instead. Copy
+  `data/encoded/frames.bin` to the machine's drive, then run that ROM.
 
 Until the release with PCM audio, the emulator and the web player from the
 rp6502 CI builds play the sound. Set `RP6502_EMU` and `RP6502_WEB` to their
