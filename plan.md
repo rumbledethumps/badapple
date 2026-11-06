@@ -373,6 +373,107 @@ frame 357.
   Floyd-Steinberg, it looks far worse than the 640x480 marching-squares
   tiles, which stay.
 
-## Later steps (to be defined)
+## Step 4: audio (plan, for review)
 
-- Audio playback, when the PCM emulator and documentation arrive.
+### Tools
+
+PCM audio arrives in the next official release. Until then, local work
+uses the emulator and the web player built by the rp6502 CI on the
+`audio` branch, run 42121145980 (`rp6502-emu --version` prints `CI
+42121145980`). They are in `data/emu/`, which Git ignores: the Windows
+emulator, for WSL, and the web player, repacked in the layout of a release
+web zip. `CMakeUserPresets.json`, also ignored, adds the preset `audio`.
+It builds in `build/audio/` with `RP6502_EMU` and `RP6502_WEB` set to
+those files. The `llvm-mos/Release` preset and CI keep the 0.42 release.
+
+### The PCM device
+
+From `ria.rst`, PCM Sampled Sound:
+
+- `open("PCM:32000,16,2", O_WRONLY)`: 32 kHz, 16-bit signed little-endian,
+  stereo, left then right. That is our format, 128,000 bytes per second.
+- The device can be open once, and plays from a 4,096-byte buffer.
+- Writes never block: a write takes as many bytes as fit and returns the
+  count. `write_xram()` writes from XRAM, so samples go from a file to
+  XRAM with `read_xram()` and on to the device with `write_xram()`,
+  never through 6502 RAM.
+- `lseek(pcm, 0, SEEK_CUR)` is the bytes waiting to play, `SEEK_END` the
+  buffer size, `SEEK_SET` empties it. `close()` waits for the buffer to
+  play.
+
+### Budget
+
+| | Bytes |
+|---|---|
+| Audio per VSYNC (60 Hz) | 2,133 |
+| Audio per video frame (30 fps) | 4,267 |
+| Video per frame | 9,600 |
+| Both, per second | 416,000 (RP6502-PICO: up to 800 KB/s) |
+| PCM device buffer | 4,096 = **32 ms** of sound |
+| ROM with audio | 63.1 MB + 28.0 MB = 91.1 MB |
+
+The device holds only 32 ms, two VSYNCs of sound, so the player must top
+it up every few milliseconds, all through playback.
+
+### Encoder
+
+`src/encode.py` adds `audio.bin`: the soundtrack of the encoded span,
+resampled by ffmpeg to 32 kHz, stereo, 16-bit, 1 dB lower so the
+resampler does not clip. It is cut to exactly the video's length,
+6573 / 30 s = 7,011,200 sample pairs, 28,044,800 bytes, so audio and video
+loop at the same point. (The source audio runs 33 ms longer than the
+video.)
+
+### Player
+
+Two named assets open at once: `ROM:video` and `ROM:audio`, each with its
+own file position, and the device `PCM:32000,16,2`.
+
+- **No device, no playback.** Opening `PCM:` comes first. If it fails, the
+  player prints `No PCM device found.` on the console and exits, before
+  it changes the canvas, so the message shows on every machine. The 0.42
+  release, which CI and GitHub Pages use, shows this until the next
+  release.
+- **XRAM.** Two audio buffers of 2,048 bytes (16 ms each) beside the two
+  video buffers: 4,096 bytes more, 27.4 KB in all. 2 x 4 KB also fits if
+  2 KB turns out tight.
+- **No call blocks the loop.** The player makes its API calls itself:
+  push the arguments, write `RIA.op`, then go on. Each pass of the main
+  loop checks VSYNC and flips when a frame is due, as now, whether or not
+  a call is running. Only when `RIA.busy` is clear does it read the
+  call's result and start the next call.
+- **One call at a time,** so the order matters. The loop alternates: a
+  PCM write, then a read, then a PCM write. A PCM write sends what is
+  left of the audio buffer that is full. A read fills an empty audio
+  buffer first, or else the next chunk of the next video frame. Video
+  reads go in chunks of 2,400 bytes, about 3 ms each on an RP6502-PICO,
+  so the device is never more than one chunk from a top-up.
+- **Video** keeps the static VSYNC count: two changes per frame, then a
+  flip, if the back buffer is complete. A slow frame still catches up.
+- **Start.** Load frame 0 and both audio buffers, then at a VSYNC show
+  frame 0 and write the first audio. Sound and picture start together.
+- **Loop.** At the end of the video, both files go back to the start.
+
+### Tests
+
+- The `play` test stays short: two seconds, no `ROM:` errors. On 0.42 it
+  sees `No PCM device found.`, which is the expected result there.
+- With the `audio` preset, a second short test records two seconds with
+  the emulator script's `wav` command and checks that it matches the
+  start of `audio.bin`, to catch gaps, offsets, or wrong format.
+
+### Holes to settle
+
+1. **Audio in Git.** CI needs `audio.bin` to publish it, and audio barely
+   compresses: 28.0 MB raw, 27.0 MB with xz, 24.8 MB with xz and a delta
+   filter (CMake's tar unpacks both). FLAC makes 20.4 MB, but the build
+   cannot unpack it without ffmpeg or flac. Proposal: keep audio local in
+   `data/encoded/` for stage 1, since CI cannot play it on 0.42 anyway,
+   and commit it with the delta filter for stage 2, after the release.
+2. **Clock drift.** Video follows VSYNC and audio follows the device's
+   sample clock. On an RP6502-PICO they should differ by milliseconds
+   over the song; the `wav` recording can measure it in the emulator.
+   If it grows, the video can take its time from the audio instead.
+3. **Buffer size.** 2 x 2 KB staging plus the device's 4 KB is 64 ms of
+   sound in flight. That is enough if no call runs longer than a few
+   milliseconds, which the 2,400-byte video chunks are for.
