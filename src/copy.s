@@ -15,6 +15,15 @@
 ;
 ; copy_run(count) copies count bytes, 1 to 255, from ADDR1 to ADDR0.
 ;
+; clear_groups(count) writes count groups of 8 zeros, 1 to 255, at ADDR0.
+;
+; scale_samples(count) scales count 16-bit samples, 1 to 255, in place:
+; it reads each through RW1 at ADDR1 and writes it back through RW0 at
+; ADDR0, which the caller points at the same place. With m the volume, of
+; 256, a sample hi:lo becomes hi * m + lo * m / 256, from tables that
+; main.c fills: vol_lo[lo] = lo * m / 256, and vol_hl[hi] and vol_hh[hi]
+; the low and high bytes of hi * m, hi signed. About 39 cycles a sample.
+;
 ; Eight bytes a pass in the copy, about 8.6 cycles a byte. The counters
 ; are in zero page.
 
@@ -55,6 +64,37 @@ ADDR1 = $ffea
 copy_run:
     tay
     copy_y
+    rts
+
+.section .text.clear_groups,"ax",@progbits
+.globl clear_groups
+clear_groups:
+    tax
+    lda #0
+1:
+    .rept 8
+    sta RW0
+    .endr
+    dex
+    bne 1b
+    rts
+
+.section .text.scale_samples,"ax",@progbits
+.globl scale_samples
+scale_samples:
+    sta mos8(count)
+1:
+    ldx RW1                 ; lo
+    ldy RW1                 ; hi
+    clc
+    lda vol_lo,x
+    adc vol_hl,y
+    sta RW0
+    lda vol_hh,y
+    adc #0
+    sta RW0
+    dec mos8(count)
+    bne 1b
     rts
 
 .section .text.decode_runs,"ax",@progbits
@@ -109,3 +149,16 @@ budget:
     .zero 1
 count:
     .zero 1
+
+; Page-aligned, so the indexed loads never cross a page.
+.section .bss.volume,"aw",@nobits
+.balign 256
+.globl vol_lo
+.globl vol_hl
+.globl vol_hh
+vol_lo:
+    .zero 256
+vol_hl:
+    .zero 256
+vol_hh:
+    .zero 256

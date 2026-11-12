@@ -23,22 +23,25 @@ cell with no edge. A cell whose tile is not among them shows the nearest
 one, counting pixels on the tile's
 border BORDER_WEIGHT times, so outlines stay continuous across tiles.
 
-Output, in ARCHIVE, which the build unpacks: tiles.bin and frames.bin,
-  below. For the whole video it is src/badapple.tar.xz, the archive the
+Output, in ARCHIVE, which the build unpacks: tiles.bin, frames.bin,
+  index.bin, and title.bin, below. For the whole video it is src/badapple.tar.xz, the archive the
   build uses; for part of it, OUT/badapple.tar.xz. The archive has fixed
   times and owners, so the same video and settings give the same bytes.
 
 Output, in OUT:
   tiles.bin    6144 bytes: 256 tiles for each of the three layers, 8 bytes
                each, one byte per row, leftmost pixel in the high bit.
-  frames.bin   16-byte header ("BAD4", frame count, first source frame,
+  frames.bin   16-byte header ("BAD5", frame count, first source frame,
                fps, length of frame 0's delta block), then per frame its
                delta block and its sound. A delta block turns the maps of
                two frames back, which the player's buffer still holds,
                into this frame's three maps, 14,400 bytes, layers 0, 1, 2:
-               the length of the next frame's delta block (2 bytes), runs
-               of a map offset (2 bytes), a count (1 to 255) and that many
-               tile IDs, then FF FF. Frames 0 and 1 are against all zeros.
+               the length of the next frame's delta block (2 bytes),
+               flags (1 byte), runs of a map offset (2 bytes), a count (1
+               to 255) and that many tile IDs, then FF FF. The first two
+               frames of each second are keyframes, against cleared maps,
+               flagged 1, so the player clears the buffer first and can
+               start there.
                The sound is 1027 samples, 4108 bytes, of raw PCM:
                30,810 Hz, 16-bit signed little-endian, stereo, resampled
                with soxr and dithered to 16 bits. Niconico's AAC encoder
@@ -48,6 +51,10 @@ Output, in OUT:
                decoded AAC peaks at +2.05 dBFS, so the sound is 2.5 dB
                lower: nothing clips here, and the RIA's resampler has
                0.45 dB more.
+  index.bin    for each second, the file offset of its first frame (4
+               bytes) and the length of that frame's delta block (2 bytes).
+  title.bin    the title screen, from src/title.py.
+  title.png    the title screen as the VGA would draw it.
   preview.mp4  the encoded frames as the three layers draw them, with the
                soundtrack of the same span.
   tileset.npz  the edge and gray tiles, cached for the next run with the same
@@ -66,6 +73,9 @@ import time
 
 import numpy as np
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import title  # noqa: E402
+
 SRC_W, SRC_H = 512, 384
 COLS, ROWS, TILE = 80, 60, 8
 FPS = 30
@@ -78,6 +88,7 @@ AUDIO_FRAME = 4  # bytes per stereo 16-bit sample pair
 assert AUDIO_RATE % FPS == 0, "a whole number of samples a frame"
 SOUND_BYTES = AUDIO_RATE // FPS * AUDIO_FRAME  # 4108
 DELTA_BACK = 2  # a frame's delta is against the frame its buffer last held
+KEYFRAME = 1    # a delta block's flag: clear the buffer, then apply the runs
 RUN_GAP = 4     # unchanged bytes that a run carries rather than start a new run
 END_OF_RUNS = b"\xff\xff"
 
@@ -352,9 +363,11 @@ def delta_runs(cur, prev):
 
 
 def apply_runs(maps, block):
-    """Applies a delta block's runs to maps in place; returns the next length."""
-    next_len = struct.unpack_from("<H", block)[0]
-    at = 2
+    """Applies a delta block to maps in place; returns the next length."""
+    next_len, flags = struct.unpack_from("<HB", block)
+    if flags & KEYFRAME:
+        maps[:] = 0
+    at = 3
     while block[at:at + 2] != END_OF_RUNS:
         start, n = struct.unpack_from("<HB", block, at)
         maps[start:start + n] = np.frombuffer(block, np.uint8, n, at + 3)
@@ -388,6 +401,7 @@ def main():
     ap.add_argument("--gray-snap", type=int, default=7, choices=range(1, 9), help="gray crossings per tile edge")
     ap.add_argument("--border-weight", type=int, default=4, help="weight of a border pixel when matching")
     ap.add_argument("--no-preview", action="store_true", help="skip preview.mp4")
+    ap.add_argument("--fonts", default="data/fonts", help="the title screen's fonts, for src/title.py")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
     if args.archive is None:
@@ -468,12 +482,21 @@ def main():
     audio = read_audio(args.video, first, count)
     zeros = np.zeros(FRAME_BYTES, np.uint8)
     arrays = [np.frombuffer(m, np.uint8) for m in maps]
-    runs = [delta_runs(arrays[n], arrays[n - DELTA_BACK] if n >= DELTA_BACK else zeros) for n in range(count)]
-    lengths = [2 + len(r) + len(END_OF_RUNS) for r in runs] + [0]
+    # Each second starts with two keyframes, against cleared maps, so the
+    # player can start there.
+    keyframe = [n % FPS < DELTA_BACK for n in range(count)]
+    runs = [delta_runs(arrays[n], zeros if keyframe[n] else arrays[n - DELTA_BACK]) for n in range(count)]
+    lengths = [3 + len(r) + len(END_OF_RUNS) for r in runs] + [0]
     with open(os.path.join(args.out, "frames.bin"), "wb") as f:
-        f.write(b"BAD4" + struct.pack("<HHBH", count, first, FPS, lengths[0]) + bytes(5))
+        f.write(b"BAD5" + struct.pack("<HHBH", count, first, FPS, lengths[0]) + bytes(5))
+        offsets = []
         for n in range(count):
-            f.write(struct.pack("<H", lengths[n + 1]) + runs[n] + END_OF_RUNS + frame_audio(audio, n))
+            offsets.append(f.tell())
+            f.write(struct.pack("<HB", lengths[n + 1], KEYFRAME if keyframe[n] else 0)
+                    + runs[n] + END_OF_RUNS + frame_audio(audio, n))
+    with open(os.path.join(args.out, "index.bin"), "wb") as f:
+        for n in range(0, count, FPS):
+            f.write(struct.pack("<IH", offsets[n], lengths[n]))
 
     # Play the file back as the player does, into two map buffers, and draw
     # the layers: every frame must come out as encoded.
@@ -504,7 +527,8 @@ def main():
     assert at == len(data) and length == 0 and sound == audio, "the stream or the sound differs"
     print(f"Wrote tiles.bin and frames.bin ({len(data):,} bytes) to {args.out}; delta blocks "
           f"{sum(lengths):,} bytes, {sum(lengths) / count:.0f} a frame on average, {max(lengths):,} at most")
-    write_archive(args.archive, args.out, ["tiles.bin", "frames.bin"])
+    print(title.build(args.out, args.fonts))
+    write_archive(args.archive, args.out, ["tiles.bin", "frames.bin", "index.bin", "title.bin"])
     print(f"Wrote {args.archive} ({os.path.getsize(args.archive):,} bytes)")
     if set_seconds is not None:
         total = 6573

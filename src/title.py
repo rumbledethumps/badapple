@@ -209,20 +209,16 @@ def draw_transport(img, fonts):
     img.paste(small, (0, top), small)
 
 
-def main():
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--out", default="data/encoded", help="output directory")
-    ap.add_argument("--fonts", default="data/fonts", help="folder of ShipporiMincho-SemiBold.ttf and -ExtraBold.ttf")
-    args = ap.parse_args()
-
-    s = Screen(args.fonts)
+def build(out, fonts):
+    """Writes title.bin and title.png to out; returns a line about them."""
+    s = Screen(fonts)
     layout(s)
     cov = s.coverage()
     assert not cov[:, TEXT_BOTTOM:].any(), "text runs into the transport"
     idx = indexed(cov)
     bands, sets, tmap = tiles_and_map(idx)
     rgb = palette()
-    with open(os.path.join(args.out, "title.bin"), "wb") as f:
+    with open(os.path.join(out, "title.bin"), "wb") as f:
         f.write(b"TTL1" + bytes([len(bands)] + bands) + bytes(16 - 5 - len(bands)))
         f.write(b"".join(rgb555(*c).to_bytes(2, "little") for c in rgb))
         for tiles in sets:
@@ -240,10 +236,18 @@ def main():
                 shown[r * TILE:(r + 1) * TILE, c * TILE + 1:c * TILE + TILE:2] = t & 15
     assert np.array_equal(shown, idx), "the tiles do not draw the screen"
     img = Image.fromarray(np.array([[c >> 3 << 3 | c >> 5 for c in rgb[i]] for i in range(16)], np.uint8)[shown])
-    draw_transport(img, args.fonts)
-    img.save(os.path.join(args.out, "title.png"))
-    print(f"{len(bands)} bands from rows {bands}, tiles {[len(t) - 1 for t in sets]} of 255; "
-          f"{len(bands) * 8192 + 4800 + 48:,} bytes of XRAM")
+    draw_transport(img, fonts)
+    img.save(os.path.join(out, "title.png"))
+    return (f"title.bin: {len(bands)} bands from rows {bands}, tiles {[len(t) - 1 for t in sets]} of 255; "
+            f"{len(bands) * 8192 + 4800 + 32:,} bytes of XRAM")
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--out", default="data/encoded", help="output directory")
+    ap.add_argument("--fonts", default="data/fonts", help="folder of ShipporiMincho-SemiBold.ttf and -ExtraBold.ttf")
+    args = ap.parse_args()
+    print(build(args.out, args.fonts))
     print(f"Wrote title.bin and title.png to {args.out}")
 
 
