@@ -726,21 +726,65 @@ track is a thin charcoal-edged line between them.
 
 - The bar and pointer fade after 3 seconds without input while playing,
   and stay while paused.
-- At start the player waits on frame 0, with the bar showing, for Play.
-  Repeat is off and the volume is full.
-- At the end, the video stops on its last frame with the bar showing,
-  and Play starts it again. With repeat on, it loops as now.
+- At start the player shows the title screen, below, with the bar, and
+  waits. Repeat is off and the volume is full.
+- At the end, with repeat off, the title screen comes back. With repeat
+  on, the video loops as now and the title screen never shows.
 - The speaker mutes and unmutes, and the slider sets the volume.
+
+### Keyboard
+
+| | Keys |
+|---|---|
+| Play, pause | Space |
+| Back, forward 10 s | left, right arrows |
+| Volume | up, down arrows |
+| Mute | M |
+| Repeat | R |
+
+### The title screen
+
+Shown before the video and after it ends when repeat is off, always with
+the transport over it. While it shows, any click, button, or key starts
+the video. Once the video plays, only the transport's own controls act.
+
+```
+                    Bad Apple!!
+                   feat. nomico
+              for the Picocomputer 6502
+
+  MUSIC   ZUN                  composer, "Bad Apple!!", 1998
+          Masayoshi Minoshima  arrangement, 2007
+          nomico               vocals
+          Haruka               lyrics
+
+  VIDEO   Μμ                   storyboard, 2008
+          Anira and team       shadow-art animation, 2009
+
+        Press play, click, or press any key
+  Space play · ← → 10 seconds · ↑ ↓ volume · M mute · R repeat
+```
+
+- **Type:** Shippori Mincho, from four studies, rendered at 1 bit per
+  pixel by the encoder.
+- **Colors:** one pastel per plane on black: white for the names and the
+  Picocomputer line (plane 0), butter for the title and the prompt
+  (plane 1), lilac for the headings, roles, and keys (plane 2).
+- **Layout:** laid out for the transport, which always shows, with clear
+  space above it, and the roles in a column clear of the longest name.
+- **Tiles:** one frame of maps with a tile set of its own, built by the
+  encoder, a third ROM asset. While the title shows, its maps are in a
+  map buffer and its tiles in the tile area. Starting the video reloads
+  the video's 6 KB of tiles from the ROM, a few milliseconds.
 
 ### The web player
 
 The ROM has its own play button now, so the web player no longer needs
 one of its own. `rp6502_web()` in `CMakeLists.txt` drops `autoplay:
 'off'`, for the default `on`, and sets `overlay: false`: the ROM starts
-when the page loads and waits on frame 0 with its transport. The browser
-allows sound at the first click on the player, which is the click on
-Play. The README's screenshot, taken after 538 VSYNCs, will then show
-frame 0 with the transport, unless the screenshot moves elsewhere.
+when the page loads and shows the title screen with its transport. The
+browser allows sound at the first click on the player, the click that
+starts the video. The README's screenshot then shows the title screen.
 
 ### XRAM
 
