@@ -707,8 +707,8 @@ track is a thin charcoal-edged line between them.
 - The bar and the pointer dissolve out together, in the pixelated steps
   of the palettes, after 3 seconds without input while playing.
 - They come back at once, with no dissolve in, so the pointer is under
-  control the moment it moves. The input that brings them back does
-  nothing else.
+  control the moment it moves. The input that brings them back also
+  does what it asks.
 - They stay while paused.
 
 ### Controls
@@ -721,7 +721,7 @@ track is a thin charcoal-edged line between them.
 | Repeat | the repeat button | Y (north) |
 | Volume | drag the slider | d-pad up, down |
 | Mute | the speaker | X (west) |
-| Show the bar | move the pointer | any button, which then does nothing else |
+| Show the bar | move the pointer | any button, which also does what it asks |
 
 - The bar and pointer fade after 3 seconds without input while playing,
   and stay while paused.
@@ -852,3 +852,6 @@ starts the video. The README's screenshot then shows the title screen.
 - Two arguments: `play` starts the video at once, without the title
   screen, and `repeat` turns repeat on. Anything else prints the two and
   stops.
+- Any input acts at once, as well as showing the faded transport. At
+  first the input that brought the transport back did nothing else, so a
+  gamepad's A had to be pressed twice to pause.

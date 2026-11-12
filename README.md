@@ -200,7 +200,7 @@ click on the transport does only what it hits. While the video plays, the transp
 pointer dissolve after 3 seconds without input, or at once when the
 pointer leaves the canvas: each palette holds its tones in five ranks of
 an ordered dither, and the ranks turn clear one at a time. They come back
-at once on any input, which then does nothing else. The emulator and the
+at once on any input, which also does what it asks. The emulator and the
 web player draw their own pointer; elsewhere the transport draws one, a
 black and white desktop arrow.
 

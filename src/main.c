@@ -621,17 +621,16 @@ static bool act(uint8_t action)
     return true;
 }
 
-/* An input that shows the faded transport does nothing else. */
-static bool wake(void)
+/* Any input shows the faded transport at once, and still does what it
+ * asks. */
+static void wake(void)
 {
-    bool hidden = fade_step != 0;
     idle = 0;
-    if (hidden)
+    if (fade_step)
     {
         fade_step = 0;
         transport_fade(0);
     }
-    return hidden;
 }
 
 static bool key_down(const uint8_t *keys, uint8_t code)
@@ -780,16 +779,11 @@ static bool tablet(bool *moved)
     if (!pressed)
         return true;
     /* A click on the video plays or pauses it, as on a video site, and
-     * starts it from the title screen. A click on the transport, above
-     * the top of the time label down, does only what it hits, and only
-     * once the transport shows. */
+     * starts it from the title screen. A click on the transport, from the
+     * top of the time label down, does only what it hits. */
+    wake();
     if (y < BAR_TOP)
-    {
-        wake();
         return act(ACT_PLAY);
-    }
-    if (wake())
-        return true;
     if (near(x, y, BACK_X))
         return act(ACT_BACK);
     if (near(x, y, PLAY_X))
@@ -836,14 +830,15 @@ static bool inputs(void)
         action = gamepad(&scrub);
     else
         gamepad(&scrub);
-    if (action && !wake())
+    if (action)
+    {
+        wake();
         ok = ok && act(action);
+    }
     if (scrub)
     {
-        idle = 0;
-        if (fade_step)
-            wake();
-        else if (!scrub_wait--)
+        wake();
+        if (!scrub_wait--)
         {
             int second = show_state == SHOW_TITLE ? 0 : (int)((next - 1) / FPS) + scrub;
             if (drag != DRAG_TRACK)
