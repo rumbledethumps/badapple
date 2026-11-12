@@ -8,7 +8,7 @@
 #include <stdint.h>
 
 /* Where things are on the canvas. */
-#define BAR_TOP 410     /* the transport's area starts here */
+#define BAR_TOP 414     /* the transport's area starts here, at the top of the time label */
 #define DISC_Y 444      /* the centers of the discs and the track */
 #define DISC_R 16
 #define BACK_X 32

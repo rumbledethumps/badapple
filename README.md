@@ -153,8 +153,9 @@ soundtrack.
 - **Sound.** `write_xram()` sends each frame's sound from the ring to the
   PCM device, in order, so the samples never pass through 6502 RAM.
 - **Volume.** Below full volume, `src/copy.s` scales each frame's sound in
-  place in the ring before it is sent, about 39 cycles a sample, from
-  tables in 6502 RAM: thirteen steps of about 3 dB, and mute.
+  place in the ring before it is sent, about 36 cycles a sample, from
+  tables in 6502 RAM: twelve even steps of the level, as a web video
+  player's slider has, so the middle is half, -6 dB; and mute.
 - **No waiting on calls.** The player starts each API call itself, through
   the RIA registers, and goes on with its loop, decoding and watching
   VSYNC, while the call runs. When `RIA.busy` clears, it takes the result
@@ -193,8 +194,9 @@ one between them, so its edges are smooth.
 | Volume | drag the slider | d-pad up, down | up, down arrows |
 | Mute | the speaker | X | M |
 
-On the title screen, a click or tap above the transport starts the
-video. While the video plays, the transport and the
+A click or tap on the video, above the top of the time label, plays and
+pauses it, as on a video site, and starts it from the title screen. A
+click on the transport does only what it hits. While the video plays, the transport and the
 pointer dissolve after 3 seconds without input, or at once when the
 pointer leaves the canvas: each palette holds its tones in five ranks of
 an ordered dither, and the ranks turn clear one at a time. They come back

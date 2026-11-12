@@ -7,10 +7,11 @@
 
 /* Plays ROM:frames, made by src/encode.py.
  *
- * It starts on the title screen, ROM:title, and waits. A click above the
- * transport starts the video, and the transport's controls do what they
- * say: Space plays and pauses, the arrows go back and forward 10 seconds,
- * R turns repeat on and off. At the end the title screen comes back, or with repeat on, the
+ * It starts on the title screen, ROM:title, and waits. A click on the
+ * video, above the transport, plays and pauses it, and starts it from the
+ * title screen; the transport's controls do what they say: Space plays and
+ * pauses, the arrows go back and forward 10 seconds, R turns repeat on and
+ * off. At the end the title screen comes back, or with repeat on, the
  * video plays again.
  *
  * The file streams into a 16 KB ring in XRAM, in reads of 4 to 8 KB. Each
@@ -97,8 +98,9 @@ static unsigned run_to;      /* the XRAM address they go to */
 extern unsigned dec_map;  /* the XRAM address of the maps being decoded */
 extern uint8_t dec_limit; /* the first page of the ring where a run might wrap */
 
-/* The volume, in steps of about 3 dB: VOLUME_M[step] of 256. */
-static const uint16_t VOLUME_M[] = {0, 6, 8, 11, 16, 23, 32, 45, 64, 91, 128, 181, 256};
+/* The volume, VOLUME_M[step] of 256: twelve even steps of the level, as a
+ * web video player's slider has, so the middle is half, -6 dB. */
+static const uint16_t VOLUME_M[] = {0, 21, 43, 64, 85, 107, 128, 149, 171, 192, 213, 235, 256};
 #define VOLUME_FULL (sizeof(VOLUME_M) / sizeof(VOLUME_M[0]) - 1)
 static uint8_t volume = VOLUME_FULL;
 static bool muted;
@@ -148,7 +150,6 @@ enum
     ACT_MUTE,
     ACT_LOUDER,
     ACT_QUIETER,
-    ACT_START,    /* a click above the transport, on the title screen only */
 };
 
 void copy_run(uint8_t count);     /* copy.s */
@@ -616,10 +617,6 @@ static bool act(uint8_t action)
     case ACT_QUIETER:
         change_volume(-1);
         break;
-    case ACT_START:
-        if (show_state == SHOW_TITLE)
-            return start_at(0, SHOW_PLAY);
-        break;
     }
     return true;
 }
@@ -782,10 +779,17 @@ static bool tablet(bool *moved)
     }
     if (!pressed)
         return true;
+    /* A click on the video plays or pauses it, as on a video site, and
+     * starts it from the title screen. A click on the transport, above
+     * the top of the time label down, does only what it hits, and only
+     * once the transport shows. */
+    if (y < BAR_TOP)
+    {
+        wake();
+        return act(ACT_PLAY);
+    }
     if (wake())
         return true;
-    if (y < BAR_TOP)
-        return act(ACT_START);
     if (near(x, y, BACK_X))
         return act(ACT_BACK);
     if (near(x, y, PLAY_X))

@@ -842,5 +842,10 @@ starts the video. The README's screenshot then shows the title screen.
   on black: Pillow scales RGBA with the alpha premultiplied and returns
   straight colors, which `src/transport.py` divided by the alpha again.
 - The pointer the transport draws is a black and white desktop arrow.
-- Only a click or tap above the transport starts the video from the title
-  screen; keys and buttons do only their transport actions.
+- A click or tap on the video, above the top of the time label, plays and
+  pauses it, and starts it from the title screen; a click on the
+  transport does only what it hits. Keys and buttons do only their
+  transport actions.
+- The volume steps are even in level, as a web video player's are, so
+  the middle of the slider is -6 dB. In steps of 3 dB the middle was
+  -18 dB, which sounded far too quiet.
