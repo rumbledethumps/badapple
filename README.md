@@ -83,20 +83,29 @@ starts, and do not change.
 - `tiles.bin`, 6,144 bytes: 256 tiles for each of the three planes, 8
   bytes each, one byte per row, leftmost pixel in the high bit. The ROM
   loads it into XRAM before the program starts.
-- `frames.bin`: a 16-byte header (`BAD3`, the frame count, the first
-  source frame, and the frame rate), then an 18,508-byte record for each
-  frame: the three 80x60 maps, planes 0, 1, and 2, one tile number per
-  byte, 14,400 bytes, then the frame's sound, 4,108 bytes, as described
-  under [The audio](#the-audio). With picture and sound in one record, the
-  player reads them together, in large reads, from one file position.
-  That is 555,240 bytes per second, and 121.7 MB for the whole video. The
-  ROM carries it as the named asset `ROM:frames`.
+- `frames.bin`: a 16-byte header (`BAD4`, the frame count, the first
+  source frame, the frame rate, and the length of frame 0's delta block),
+  then for each frame its delta block and its sound, 4,108 bytes, as
+  described under [The audio](#the-audio). The ROM carries it as the
+  named asset `ROM:frames`.
 
-The archive is 28.6 MB, and Git keeps it, so the build needs no source
-video and no encoder. After writing the files, the encoder draws every
-frame back from them, the way the three planes do, and checks that each
-one comes out as encoded. It also writes `preview.mp4` in
-`data/encoded/`, the encoded frames with the soundtrack.
+A frame's three 80x60 maps, one tile number per byte, are 14,400 bytes,
+but few of them change from frame to frame. The player keeps two map
+buffers, so the buffer that a frame decodes into still holds the frame two
+before it, and the delta block holds only the runs that change it: a
+2-byte map offset, a count of 1 to 255, and that many tile numbers, with
+gaps of up to four unchanged bytes carried in the run. FF FF ends the
+block, which starts with the length of the next frame's block. Frames 0
+and 1 are deltas against all zeros. The delta blocks average 1,126 bytes a
+frame, 5,647 at most, and 7.4 MB in all, against 94.7 MB of maps. With the
+sound, `frames.bin` is 34.4 MB.
+
+The archive is 30.0 MB, and Git keeps it, so the build needs no source
+video and no encoder. After writing the files, the encoder plays the
+stream back the way the player does, into two map buffers, draws the
+three planes, and checks that each frame comes out as encoded. It also
+writes `preview.mp4` in `data/encoded/`, the encoded frames with the
+soundtrack.
 
 ## The player
 
@@ -104,37 +113,45 @@ one comes out as encoded. It also writes `preview.mp4` in
 
 - **PCM first.** The player opens `PCM:30810,16,2` before anything else.
   When it cannot, it prints `No PCM device found.` and stops.
-- **Double buffering.** XRAM holds two records. One is on screen, and
-  `read_xram()` loads the next frame into the other, straight from the
-  ROM.
-- **VSYNC.** A frame is shown by pointing all three planes at its maps. The
-  display runs at 60 Hz, so a frame lasts two VSYNCs. The player keeps the
-  last VSYNC count in a static, and at every second change it shows the
-  next frame right away, in the 1.4 ms before the first scanline, so the
-  picture never tears.
-- **Catching up.** A frame that is not loaded by its VSYNC shows at the
+- **A stream ring.** `read_xram()` reads the file into a 16 KB ring in
+  XRAM, 4 to 8 KB a read, whenever the ring has room.
+- **Decoding in the 6502.** Once a frame's delta block and sound are both
+  in the ring, the 6502 applies the runs to the back map buffer:
+  `src/copy.s` reads the ring through portal 1 and writes the maps through
+  portal 0, eight bytes a pass, about 8.6 cycles a byte, with its counters
+  in zero page. It stops after about 256 bytes, so the main loop can check
+  VSYNC between steps. Near the end of the ring, where a run could wrap,
+  C applies one run at a time.
+- **Double buffering.** One map buffer is on screen while the next frame
+  decodes into the other.
+- **VSYNC.** A frame is shown by pointing all three planes at its maps.
+  The display runs at 60 Hz, so a frame lasts two VSYNCs. The player keeps
+  the last VSYNC count in a static, and at every second change it shows
+  the next frame right away, in the 1.4 ms before the first scanline, so
+  the picture never tears.
+- **Catching up.** A frame that is not decoded by its VSYNC shows at the
   next one, and the frame after it one VSYNC sooner, so the video catches
   up instead of stretching.
-- **Sound.** `write_xram()` sends each record's sound from XRAM to the PCM
-  device, in order, so the samples never pass through 6502 RAM. A buffer
-  loads again only once all of its sound has gone to the device.
+- **Sound.** `write_xram()` sends each frame's sound from the ring to the
+  PCM device, in order, so the samples never pass through 6502 RAM.
 - **No waiting on calls.** The player starts each API call itself, through
-  the RIA registers, and goes on with its loop, watching VSYNC, while the
-  call runs. When `RIA.busy` clears, it takes the result and starts the
-  next call.
+  the RIA registers, and goes on with its loop, decoding and watching
+  VSYNC, while the call runs. When `RIA.busy` clears, it takes the result
+  and starts the next call.
 - **Feeding the device.** Nothing feeds the PCM device during a read, and
   its 4,096-byte buffer plays for 33 ms. So the player fills the device
-  before every read, and at every VSYNC, and reads each record in two
-  halves, about 9 ms each on an RP6502-PICO.
-- **Each pass starts in sync.** Frame 0 loads, then shows at a VSYNC, and
-  its sound starts right after it. At the end, the player sends the rest
-  of the sound, waits for it to play, and starts the next pass the same
-  way.
+  before every read, and at every VSYNC.
+- **Each pass starts in sync.** Both map buffers are cleared, the ring
+  fills, and frame 0 decodes, then shows at a VSYNC, and its sound starts
+  right after it. At the end, the player sends the rest of the sound,
+  waits for it to play, and starts the next pass the same way.
 
-Measured on an RP6502-PICO, reading 18,508-byte records from its USB
-drive: reads ran at 1,018 kB/s and took 55% of the time, so a frame loads
-in about 18 ms of its 33. The PCM device never fell below about 1,860
-bytes, 15 ms of sound.
+XRAM holds the tiles, 6,144 bytes, the two map buffers, 28,800, and the
+ring, 16,384: 51.4 KB, leaving about 14 KB.
+
+In the emulator, over the whole video, no frame was late at the 6502's
+8 MHz, and none at 4 MHz either. At 3 MHz, 19 frames were late. A
+10-second sample played cleanly on an RP6502-PICO.
 
 ## The audio
 
@@ -162,8 +179,8 @@ stereo, 16 bits**.
   resamples it with soxr and dithers it to 16 bits.
 
 At 30,810 Hz, stereo, and 16 bits, the soundtrack is 123,240 bytes per
-second and 27.0 MB for its 219 seconds. With the video, the player reads
-555,240 bytes per second.
+second and 27.0 MB for its 219 seconds. With the delta blocks, the player
+reads about 157,000 bytes per second.
 
 ## Building
 
@@ -176,7 +193,7 @@ cmake --build --preset llvm-mos/Release
 ```
 
 The build unpacks `src/badapple.tar.xz` into the build folder, and writes
-the 122 MB ROM to `build/llvm-mos/release/badapple/badapple.rp6502`.
+the 34 MB ROM to `build/llvm-mos/release/badapple/badapple.rp6502`.
 
 ### Encoding the video
 
@@ -208,7 +225,7 @@ the other options.
   configuration, or run
   `build/llvm-mos/release/badapple/rp6502-emu build/llvm-mos/release/badapple/badapple.rp6502`.
 - **Web player.** The build also writes the web player to
-  `build/llvm-mos/release/web/badapple/`, with the 122 MB ROM. The
+  `build/llvm-mos/release/web/badapple/`, with the 34 MB ROM. The
   RP6502-WEB launch configuration serves it and opens it in a browser.
 - **Test.** `ctest --test-dir build/llvm-mos/release` runs the `play`
   test: two seconds in the emulator, which passes when the player finds

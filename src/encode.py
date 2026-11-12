@@ -31,21 +31,26 @@ Output, in ARCHIVE, which the build unpacks: tiles.bin and frames.bin,
 Output, in OUT:
   tiles.bin    6144 bytes: 256 tiles for each of the three layers, 8 bytes
                each, one byte per row, leftmost pixel in the high bit.
-  frames.bin   16-byte header ("BAD3", frame count, first source frame,
-               fps), then an 18,508-byte record per frame, so the player
-               reads a frame and its sound together: the three 80x60 maps,
-               layers 0, 1, 2, one tile ID per byte, 14,400 bytes, then
-               the frame's sound, 1027 samples, 4108 bytes. The sound is raw
-               PCM, 30,810 Hz, 16-bit signed little-endian, stereo,
-               resampled with soxr and dithered to 16 bits. The decoded
-               AAC peaks at +2.05 dBFS, so it is 2.5 dB lower: nothing
-               clips here, and the RIA's resampler has 0.45 dB more. Niconico's AAC encoder
+  frames.bin   16-byte header ("BAD4", frame count, first source frame,
+               fps, length of frame 0's delta block), then per frame its
+               delta block and its sound. A delta block turns the maps of
+               two frames back, which the player's buffer still holds,
+               into this frame's three maps, 14,400 bytes, layers 0, 1, 2:
+               the length of the next frame's delta block (2 bytes), runs
+               of a map offset (2 bytes), a count (1 to 255) and that many
+               tile IDs, then FF FF. Frames 0 and 1 are against all zeros.
+               The sound is 1027 samples, 4108 bytes, of raw PCM:
+               30,810 Hz, 16-bit signed little-endian, stereo, resampled
+               with soxr and dithered to 16 bits. Niconico's AAC encoder
                kept nothing above about 15.4 kHz, and a rate carries up to
-               half of itself, so 30.8 kHz carries it all; 30,810 Hz is the
-               next rate with a whole number of samples a frame.
-  preview.mp4  the encoded frames as the two layers draw them, with the
+               half of itself, so 30.8 kHz carries it all; 30,810 Hz is
+               the next rate with a whole number of samples a frame. The
+               decoded AAC peaks at +2.05 dBFS, so the sound is 2.5 dB
+               lower: nothing clips here, and the RIA's resampler has
+               0.45 dB more.
+  preview.mp4  the encoded frames as the three layers draw them, with the
                soundtrack of the same span.
-  tileset.npz  the 511 tiles, cached for the next run with the same
+  tileset.npz  the edge and gray tiles, cached for the next run with the same
                settings.
 """
 
@@ -72,7 +77,9 @@ AUDIO_RATE = 30810
 AUDIO_FRAME = 4  # bytes per stereo 16-bit sample pair
 assert AUDIO_RATE % FPS == 0, "a whole number of samples a frame"
 SOUND_BYTES = AUDIO_RATE // FPS * AUDIO_FRAME  # 4108
-RECORD_BYTES = FRAME_BYTES + SOUND_BYTES
+DELTA_BACK = 2  # a frame's delta is against the frame its buffer last held
+RUN_GAP = 4     # unchanged bytes that a run carries rather than start a new run
+END_OF_RUNS = b"\xff\xff"
 
 
 # Corner samples: a box one cell wide around each of the 81x61 corners.
@@ -328,6 +335,34 @@ def frame_audio(audio, n):
     return audio[n * SOUND_BYTES:(n + 1) * SOUND_BYTES]
 
 
+def delta_runs(cur, prev):
+    """The runs that turn map bytes prev into cur: each is a 2-byte offset,
+    a count of 1 to 255, and that many bytes."""
+    changed = np.flatnonzero(cur != prev)
+    out = bytearray()
+    i = 0
+    while i < len(changed):
+        start = end = int(changed[i])
+        i += 1
+        while i < len(changed) and changed[i] - end <= RUN_GAP + 1 and changed[i] - start < 255:
+            end = int(changed[i])
+            i += 1
+        out += struct.pack("<HB", start, end - start + 1) + cur[start:end + 1].tobytes()
+    return bytes(out)
+
+
+def apply_runs(maps, block):
+    """Applies a delta block's runs to maps in place; returns the next length."""
+    next_len = struct.unpack_from("<H", block)[0]
+    at = 2
+    while block[at:at + 2] != END_OF_RUNS:
+        start, n = struct.unpack_from("<HB", block, at)
+        maps[start:start + n] = np.frombuffer(block, np.uint8, n, at + 3)
+        at += 3 + n
+    assert at + 2 == len(block)
+    return next_len
+
+
 def layer_of(index):
     """Set index to (bottom ID, top ID). Index 0 is the shared black tile."""
     if index == 0:
@@ -431,21 +466,32 @@ def main():
     encode_seconds = time.time() - t1
 
     audio = read_audio(args.video, first, count)
+    zeros = np.zeros(FRAME_BYTES, np.uint8)
+    arrays = [np.frombuffer(m, np.uint8) for m in maps]
+    runs = [delta_runs(arrays[n], arrays[n - DELTA_BACK] if n >= DELTA_BACK else zeros) for n in range(count)]
+    lengths = [2 + len(r) + len(END_OF_RUNS) for r in runs] + [0]
     with open(os.path.join(args.out, "frames.bin"), "wb") as f:
-        f.write(b"BAD3" + struct.pack("<HHB", count, first, FPS) + bytes(7))
-        for n, m in enumerate(maps):
-            f.write(m + frame_audio(audio, n))
+        f.write(b"BAD4" + struct.pack("<HHBH", count, first, FPS, lengths[0]) + bytes(5))
+        for n in range(count):
+            f.write(struct.pack("<H", lengths[n + 1]) + runs[n] + END_OF_RUNS + frame_audio(audio, n))
 
-    # Draw the layers back from the files: every frame must come out as encoded.
+    # Play the file back as the player does, into two map buffers, and draw
+    # the layers: every frame must come out as encoded.
     tiles = np.frombuffer(open(os.path.join(args.out, "tiles.bin"), "rb").read(), np.uint8).reshape(LAYERS, 256, 8)
     layer_px = np.unpackbits(tiles, axis=2).reshape(LAYERS, 256, TILE, TILE).astype(bool)  # [layer][id][y][x]
-    data = open(os.path.join(args.out, "frames.bin"), "rb").read()[16:]
-    assert len(data) == count * RECORD_BYTES
-    assert b"".join(data[n * RECORD_BYTES + FRAME_BYTES:(n + 1) * RECORD_BYTES]
-                    for n in range(count)) == audio, "the sound differs"
+    data = open(os.path.join(args.out, "frames.bin"), "rb").read()
+    length, at = struct.unpack_from("<H", data, 9)[0], 16
+    buffers = [zeros.copy() for _ in range(DELTA_BACK)]
+    sound = bytearray()
     canvas = []
     for n in range(count):
-        m = np.frombuffer(data, np.uint8, FRAME_BYTES, n * RECORD_BYTES).reshape(LAYERS, ROWS, COLS)
+        buf = buffers[n % DELTA_BACK]
+        next_len = apply_runs(buf, data[at:at + length])
+        sound += data[at + length:at + length + SOUND_BYTES]
+        at += length + SOUND_BYTES
+        length = next_len
+        assert buf.tobytes() == maps[n], f"frame {n}'s maps differ"
+        m = buf.reshape(LAYERS, ROWS, COLS)
         cells = layer_px[0][m[0]] | layer_px[1][m[1]] | layer_px[2][m[2]]                     # [row][col][y][x]
         img = cells.transpose(0, 2, 1, 3).reshape(ROWS * TILE, COLS * TILE)
         want = tile_pixels(shown[n]).reshape(ROWS, COLS, TILE, TILE).transpose(0, 2, 1, 3)
@@ -455,7 +501,9 @@ def main():
     print(f"Encoded {count} frames from frame {first} ({first / FPS:.2f} s) in {encode_seconds:.1f} s; "
           f"{stand_in_cells} of {count * MAP_BYTES} cells use a stand-in tile; "
           f"{len(match_edge.stand_ins) + len(match_gray.stand_ins) + len(match_gray_all.stand_ins)} distinct stand-ins")
-    print(f"Wrote tiles.bin and frames.bin ({16 + count * RECORD_BYTES:,} bytes) to {args.out}")
+    assert at == len(data) and length == 0 and sound == audio, "the stream or the sound differs"
+    print(f"Wrote tiles.bin and frames.bin ({len(data):,} bytes) to {args.out}; delta blocks "
+          f"{sum(lengths):,} bytes, {sum(lengths) / count:.0f} a frame on average, {max(lengths):,} at most")
     write_archive(args.archive, args.out, ["tiles.bin", "frames.bin"])
     print(f"Wrote {args.archive} ({os.path.getsize(args.archive):,} bytes)")
     if set_seconds is not None:

@@ -516,3 +516,104 @@ Measured over 10 s, with the 32 kHz encoding before the last change:
 | Overall | 418 kB/s, 416 kB/s needed |
 | Frames loaded ahead at each frame change | two 240 times, one 60 times, none 0 |
 | Fewest bytes in the PCM device | 360, 2.8 ms of sound |
+
+## Step 5: compressed maps
+
+The firmware now reads over 1 MB/s, and two buffers are enough (step 4's
+three-plane test, then a 10-second double-buffered ROM on an RP6502-PICO).
+The ROM is 122 MB, and 95 MB of it is maps that barely change. This step
+sends only the map bytes that change, decoded by the 6502. The RIA does
+nothing new. The sound stays raw.
+
+### Measured
+
+On the current encoding, comparing each frame's three maps with the frame
+two before it, the one its buffer last held:
+
+| | Bytes |
+|---|---|
+| Changed map bytes per frame | 555 mean, 4,963 max, of 14,400 |
+| Delta block per frame, format below | 1,118 mean, 3,219 at the 99th percentile, 5,585 max |
+| All delta blocks | 7.4 MB, against 94.7 MB of maps |
+| ROM | about 35 MB: 7.4 MB of maps, 27.0 MB of sound |
+| Read rate | about 157 kB/s, against 555 kB/s |
+
+### Format
+
+`frames.bin`, `BAD4`: the header gives frame 0's delta length. Then per
+frame, the delta block, then the 4,108 bytes of sound.
+
+- **Delta block:** the length of the next frame's delta block (2 bytes),
+  then runs, then a 0. A run is a map offset, 0 to 14,399 across the three
+  maps (2 bytes), a count of 1 to 255, and that many tile IDs. A gap of
+  four bytes or fewer between changes goes in the run as literals.
+- **Deltas against two frames back,** the frame the buffer last held.
+  Frames 0 and 1 are against all zeros, and each pass starts with both map
+  buffers cleared.
+
+### XRAM, using only what it needs
+
+| | Bytes |
+|---|---|
+| Tiles, 3 planes | 6,144 |
+| Config and palettes | 60 |
+| Map buffers, 2 x 14,400 | 28,800 |
+| Stream ring, deltas and sound | 16,384 |
+| Total | 51,388 |
+| Free for the transport bar, pointer, and index | about 14 KB |
+
+### Player
+
+- **Large reads.** A frame now averages about 5.2 KB, deltas and sound,
+  too small for one read each: every call has a fixed cost, and reads
+  stop gaining much between 8 and 16 KB. So the file streams into a
+  16 KB ring in XRAM, 8 KB a read, whenever 8 KB of the ring is free.
+  That is a read about every 1.5 frames, about 8 ms each on an
+  RP6502-PICO.
+- **Parsing the ring.** The 6502 reads each frame's delta block from the
+  ring through `RW1`, and its sound goes to the PCM device straight from
+  the ring with `write_xram()`, in two writes where it wraps. Ring space
+  is free again once a frame's delta is applied and its sound sent.
+- **The 6502 applies the delta** into the back map buffer: for each run,
+  set `ADDR0` to the map offset, then copy count bytes from the ring
+  (`RW1`) to the map (`RW0`), about 13 cycles a byte. A frame averages
+  about 2 ms of this and about 9 ms at worst.
+- **The copy never holds up VSYNC.** The main loop applies one run, or at
+  most about 256 bytes, per pass, and checks VSYNC every pass, so a flip
+  still lands in the 1.37 ms window.
+- **A frame flips at its VSYNC once its delta is applied,** as now. A late
+  frame shows at the next VSYNC.
+- **Everything else stays:** the PCM top-up before every read and at every
+  VSYNC, the static VSYNC count, and the sync at the start of each pass.
+
+### Tests
+
+- The encoder applies every delta block to two simulated buffers and
+  checks that each frame comes out as encoded.
+- The emulator's short `play` test, then a screenshot at frame 357.
+- A 10-second ROM on the hardware, then the whole video in the emulator.
+
+### Later
+
+The transport bar and pointer are planned as sprites on plane 2, with a
+tablet. Each plane has a sprite layer drawn over its fill layer, so they
+go over the edge tiles with no change to them. The free XRAM above is
+meant for them and for an index asset of frame positions.
+
+### Results
+
+- The stream format is `BAD4`, as planned. The delta blocks are 7.4 MB,
+  averaging 1,126 bytes a frame, 5,647 at most, and `frames.bin` is
+  34.4 MB. The encoder plays the stream back and checks every frame.
+- The run loop is in assembly, `src/copy.s`: unrolled by eight, counters
+  in zero page, and the stream position read back from ADDR1 once per
+  call, with no per-run 16-bit sums. A first version in C decoded every
+  frame exactly but fell 220 frames behind in 4,000 VSYNCs.
+- In the emulator, screenshots after 716, 4,000, 12,000 and 12,600 VSYNCs
+  each match the encoder's frame pixel for pixel, 3 frames after VSYNC / 2,
+  the start-up time. Sound recorded at the start and at the spinning
+  yin-yang keeps one alignment, second by second, with no dropouts.
+- Late frames over the whole video, counted with a temporary probe: none
+  at 8 MHz, none at 4 MHz, 19 at 3 MHz, 5,053 at 2 MHz. The decoder has
+  at least twice the CPU it needs.
+- A 10-second ROM played cleanly on an RP6502-PICO.

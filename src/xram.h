@@ -52,7 +52,8 @@ typedef struct
  * 2 (planes 1 and 2) draw the hard white edges over it. Their tile 0 is
  * clear, because black is transparent on them.
  *
- * Each frame is a record in ROM:frames: the three maps, then the frame's
+ * ROM:frames streams into a ring: per frame a delta block, the runs that
+ * turn the maps of two frames back into this frame's, then the frame's
  * sound, 1,027 samples of 30,810 Hz 16-bit stereo. */
 
 #define MAP_COLS 80
@@ -61,26 +62,23 @@ typedef struct
 #define LAYERS 3
 #define FRAME_BYTES (LAYERS * MAP_BYTES)
 #define SOUND_BYTES 4108
-#define RECORD_BYTES (FRAME_BYTES + SOUND_BYTES)
 #define BUFFERS 2
+#define RING_BYTES 16384
+#define RING_MASK (RING_BYTES - 1)
 
 typedef struct
 {
-    uint8_t maps[LAYERS][MAP_BYTES];  /* [layer] */
-    uint8_t sound[SOUND_BYTES];
-} record_t;
-
-typedef struct
-{
-    uint8_t tiles[LAYERS][256][8];  /* [layer], loaded from tiles.bin */
-    mode2_config_t config[LAYERS];  /* [layer] */
-    uint16_t palette[LAYERS][2];    /* [layer][color] */
-    record_t records[BUFFERS];       /* [buffer] */
+    uint8_t tiles[LAYERS][256][8];             /* [layer], loaded from tiles.bin */
+    mode2_config_t config[LAYERS];             /* [layer] */
+    uint16_t palette[LAYERS][2];               /* [layer][color] */
+    uint8_t maps[BUFFERS][LAYERS][MAP_BYTES];  /* [buffer][layer] */
+    uint8_t ring[RING_BYTES];                  /* ROM:frames, as read */
 } xram_layout_t;
 
 #define XRAM_TILES offsetof(xram_layout_t, tiles)
 #define XRAM_CONFIG offsetof(xram_layout_t, config)
 #define XRAM_PALETTE offsetof(xram_layout_t, palette)
-#define XRAM_RECORDS offsetof(xram_layout_t, records)
+#define XRAM_MAPS offsetof(xram_layout_t, maps)
+#define XRAM_RING offsetof(xram_layout_t, ring)
 
 #endif

@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.28)
 
 include(${CMAKE_CURRENT_LIST_DIR}/tools/rp6502.cmake)
 
-project(BADAPPLE C)
+project(BADAPPLE C ASM)
 
 add_executable(badapple)
 rp6502_align(badapple "XRAM_.*")
@@ -37,4 +37,7 @@ rp6502_web(badapple CONFIG [[
 ]])
 target_sources(badapple PRIVATE
     src/main.c
+    src/copy.s
 )
+# The C flags of the build reach the assembler too, which does not use them.
+set_source_files_properties(src/copy.s PROPERTIES COMPILE_OPTIONS -Wno-unused-command-line-argument)
