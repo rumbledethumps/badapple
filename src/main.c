@@ -2,12 +2,13 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <unistd.h>
+#include "stats.h"
 #include "xram.h"
 
 /* Plays ROM:frames, made by src/encode.py, in a loop. Each frame is a
- * record of the bottom and top maps and the frame's sound. Three buffers in
+ * record of its three maps and its sound. Three buffers in
  * XRAM hold the frame on screen and up to two frames loaded ahead of it. A
- * frame is shown by pointing both layers at its maps, at a VSYNC, so it
+ * frame is shown by pointing all three layers at its maps, at a VSYNC, so it
  * doesn't tear. A 30 fps frame lasts two 60 Hz VSYNCs. A frame that isn't
  * loaded by its VSYNC is shown at the next one. The sound goes from the
  * records to the PCM device in order.
@@ -17,7 +18,7 @@
  * the result and starts the next call.
  *
  * Nothing feeds the PCM device during a read, and its 4,096 bytes play for
- * 32 ms, so a record is read in two halves, and the device is filled before
+ * 33 ms, so a record is read in two halves, and the device is filled before
  * every read, and at every VSYNC for when there is nothing to read. */
 
 #define HEADER_BYTES 16
@@ -67,9 +68,11 @@ static uint8_t after(uint8_t buffer)
 static void show(uint8_t buffer)
 {
     unsigned maps = XRAM_RECORDS + buffer * RECORD_BYTES;
-    xram0_poke16(XRAM_CONFIG + offsetof(mode2_config_t, xram_data_ptr), maps);
-    xram0_poke16(XRAM_CONFIG + sizeof(mode2_config_t) + offsetof(mode2_config_t, xram_data_ptr),
-                 maps + MAP_BYTES);
+    uint8_t layer;
+    for (layer = 0; layer < LAYERS; layer++)
+        xram0_poke16(XRAM_CONFIG + layer * sizeof(mode2_config_t) +
+                         offsetof(mode2_config_t, xram_data_ptr),
+                     maps + layer * MAP_BYTES);
 }
 
 /* Starts read_xram() or write_xram() without waiting for it. */
@@ -101,6 +104,7 @@ static void finish_call(void)
         }
         break;
     case CALL_READ:
+        stats_read_done(n, pcm_fd);
         if (n > 0 && (got += n) == RECORD_BYTES)
         {
             sound_len[load] = SOUND_BYTES;
@@ -123,8 +127,11 @@ static void start_next_call(void)
                    XRAM_RECORDS + sound_play * RECORD_BYTES + FRAME_BYTES + sound_sent,
                    sound_len[sound_play] - sound_sent, pcm_fd);
     else if (ahead < AHEAD && next + ahead < frames && !sound_len[load])
+    {
+        stats_read_start();
         start_call(CALL_READ, RIA_OP_READ_XRAM, XRAM_RECORDS + load * RECORD_BYTES + got,
                    got < READ_BYTES ? READ_BYTES - got : RECORD_BYTES - got, frames_fd);
+    }
 }
 
 /* Every pass starts the same way, so sound and picture start together:
@@ -158,9 +165,10 @@ static bool start_pass(void)
     if (!loops)
     {
         xreg_vga_canvas(CANVAS_640X480);
-        xreg_vga_mode2(MODE2_1BPP | MODE2_8X8, XRAM_CONFIG, 0);
-        xreg_vga_mode2(MODE2_1BPP | MODE2_8X8, XRAM_CONFIG + sizeof(mode2_config_t), 1);
+        for (i = 0; i < LAYERS; i++)
+            xreg_vga_mode2(MODE2_1BPP | MODE2_8X8, XRAM_CONFIG + i * sizeof(mode2_config_t), i);
     }
+    stats_start();
     vsync = ria_vsync();
     while (ria_vsync() == vsync)
         ;
@@ -209,19 +217,17 @@ int main(void)
     }
     frames_fd = open(FRAMES_PATH, O_RDONLY);
     if (frames_fd < 0 || read(frames_fd, header, HEADER_BYTES) != HEADER_BYTES ||
-        header[0] != 'B' || header[1] != 'A' || header[2] != 'D' || header[3] != '2')
+        header[0] != 'B' || header[1] != 'A' || header[2] != 'D' || header[3] != '3')
     {
         puts(FRAMES_PATH " is missing.");
         return 1;
     }
     frames = header[4] | header[5] << 8;
 
-    xram0_poke16(XRAM_PALETTE + 0, COLOR_FROM_RGBA(0, 0, 0, 255));
-    xram0_poke16(XRAM_PALETTE + 2, COLOR_FROM_RGBA(255, 255, 255, 255));
-    xram0_poke16(XRAM_PALETTE + 4, COLOR_FROM_RGBA(0, 0, 0, 0));
-    xram0_poke16(XRAM_PALETTE + 6, COLOR_FROM_RGBA(255, 255, 255, 255));
-    for (layer = 0; layer < 2; layer++)
+    for (layer = 0; layer < LAYERS; layer++)
     {
+        xram0_poke16(XRAM_PALETTE + layer * 4, COLOR_FROM_RGBA(0, 0, 0, layer ? 0 : 255));
+        xram0_poke16(XRAM_PALETTE + layer * 4 + 2, COLOR_FROM_RGBA(255, 255, 255, 255));
         config = (mode2_config_t){
             .width_tiles = MAP_COLS,
             .height_tiles = MAP_ROWS,
@@ -236,6 +242,7 @@ int main(void)
         return 1;
     while (1)
     {
+        stats_poll();
         if (ria_vsync() != vsync)
         {
             ++vsync;
@@ -249,6 +256,7 @@ int main(void)
                         return 1;
                     continue;
                 }
+                stats_due(ahead);
                 if (ahead)
                 {
                     front = after(front);
@@ -258,11 +266,14 @@ int main(void)
                     ++next;
                 }
             }
+            stats_vsync();
         }
         if (RIA.busy & 0x80)
             continue;
         if (call != CALL_NONE)
             finish_call();
+        if (pcm_full)
+            stats_print(next);
         start_next_call();
     }
 }

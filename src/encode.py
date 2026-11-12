@@ -1,20 +1,24 @@
 #!/usr/bin/env python3
-"""Bad Apple!! encoder: 80x60 marching-squares tiles, three levels, 511 tiles.
+"""Bad Apple!! encoder: hard edges over real gray, on three planes of tiles.
 
 Each 512x384 frame is box-filtered to an 81x61 grid of corner samples. Each
-of the 80x60 cells becomes one 8x8 1bpp tile on a 640x480 canvas. A dark
-line and a light line, both marching-squares iso-lines snapped to SNAP
-positions per tile edge, split each tile into black (under the dark
-threshold), a checkerboard fill (between), and white (over the light one).
+of the 80x60 cells becomes 8x8 1bpp tiles on a 640x480 canvas, in three
+mode 2 layers:
 
-The whole video shares 511 tiles: the 511 it uses most. A cell whose tile
+- Real gray. Source pixels between GRAY_LO and GRAY_HI are gray. An opening
+  of OPENING source pixels (shrink, then grow back) drops the thin gray
+  bands along edges, which are antialiasing, and keeps wide gray: motion
+  blur, glows, shadows.
+- Layer 0, plane 0: the real gray as a checkerboard, under a marching-squares
+  outline snapped to GRAY_SNAP positions per tile edge. 256 tiles; tile 0
+  is all black.
+- Layers 1 and 2, planes 1 and 2: one hard white marching-squares outline at
+  EDGE, snapped to EDGE_SNAP positions, clear inside the real gray. 511
+  tiles from two layers of 256; tile 0 of both is clear.
+
+Each layer set holds the tiles the whole video uses most. A cell whose tile
 is not among them shows the nearest one, counting pixels on the tile's
 border BORDER_WEIGHT times, so outlines stay continuous across tiles.
-
-The 511 tiles live on two mode 2 layers of 256 tiles each. Tile 0 of both
-layers is all black, which is transparent on the top layer. A cell shows a
-bottom tile under the top layer's tile 0, or a top tile over the bottom
-layer's tile 0.
 
 Output, in ARCHIVE, which the build unpacks: tiles.bin and frames.bin,
   below. For the whole video it is src/badapple.tar.xz, the archive the
@@ -22,12 +26,12 @@ Output, in ARCHIVE, which the build unpacks: tiles.bin and frames.bin,
   times and owners, so the same video and settings give the same bytes.
 
 Output, in OUT:
-  tiles.bin    4096 bytes: 256 bottom tiles, then 256 top tiles, 8 bytes
+  tiles.bin    6144 bytes: 256 tiles for each of the three layers, 8 bytes
                each, one byte per row, leftmost pixel in the high bit.
-  frames.bin   16-byte header ("BAD2", frame count, first source frame,
-               fps), then a 13,708-byte record per frame, so the player
-               reads a frame and its sound together: the 80x60 bottom map
-               and the 80x60 top map, one tile ID per byte, 9600 bytes, then
+  frames.bin   16-byte header ("BAD3", frame count, first source frame,
+               fps), then an 18,508-byte record per frame, so the player
+               reads a frame and its sound together: the three 80x60 maps,
+               layers 0, 1, 2, one tile ID per byte, 14,400 bytes, then
                the frame's sound, 1027 samples, 4108 bytes. The sound is raw
                PCM, 30,810 Hz, 16-bit signed little-endian, stereo, 1 dB
                lower so the resampler does not clip. Niconico's AAC encoder
@@ -37,7 +41,7 @@ Output, in OUT:
   preview.mp4  the encoded frames as the two layers draw them, with the
                soundtrack of the same span.
   tileset.npz  the 511 tiles, cached for the next run with the same
-               thresholds and snapping.
+               settings.
 """
 
 import argparse
@@ -57,7 +61,8 @@ COLS, ROWS, TILE = 80, 60, 8
 FPS = 30
 SETS = 511
 MAP_BYTES = COLS * ROWS
-FRAME_BYTES = 2 * MAP_BYTES
+LAYERS = 3
+FRAME_BYTES = LAYERS * MAP_BYTES
 AUDIO_RATE = 30810
 AUDIO_FRAME = 4  # bytes per stereo 16-bit sample pair
 assert AUDIO_RATE % FPS == 0, "a whole number of samples a frame"
@@ -127,10 +132,6 @@ def line_keys(g, thr, k):
     return key | linked.astype(np.int64) << 16
 
 
-def cell_keys(g, dark, light, k):
-    return line_keys(g, dark, k) | line_keys(g, light, k) << LINE_BITS
-
-
 def inside_polygon(poly):
     """8x8 mask of the pixel centers inside a polygon (even-odd)."""
     ys, xs = np.mgrid[0:TILE, 0:TILE] + 0.5
@@ -178,10 +179,8 @@ CHECKER = (X + Y) % 2 == 1
 BIT = np.uint64(1) << np.arange(64, dtype=np.uint64)
 
 
-def tile_of_key(ckey, k):
-    level = line_mask(ckey & ((1 << LINE_BITS) - 1), k).astype(int) + line_mask(ckey >> LINE_BITS, k)
-    px = np.where(level == 0, False, np.where(level == 2, True, CHECKER))
-    return np.uint64((px.ravel().astype(np.uint64) * BIT).sum())
+def mask_bits(mask):
+    return np.uint64((mask.ravel().astype(np.uint64) * BIT).sum())
 
 
 def tile_pixels(tiles):
@@ -200,41 +199,77 @@ def tile_rows(tile):
     return bytes(rows)
 
 
+def opening(mask, r):
+    """Square opening of a boolean mask: erode by r, then dilate by r."""
+    if r == 0:
+        return mask
+
+    def run(m, axis, erode):
+        pad = [(0, 0), (0, 0)]
+        pad[axis] = (r + 1, r)
+        c = np.cumsum(np.pad(m, pad, constant_values=erode).astype(np.int32), axis=axis)
+        n = m.shape[axis]
+        hi = np.take(c, np.arange(2 * r + 1, n + 2 * r + 1), axis=axis)
+        lo = np.take(c, np.arange(0, n), axis=axis)
+        return (hi - lo == 2 * r + 1) if erode else (hi - lo > 0)
+
+    m = run(run(mask, 1, True), 0, True)
+    return run(run(m, 1, False), 0, False)
+
+
 class Tiler:
-    """Turns frames into tiles, caching each key's tile."""
+    """Turns a frame into edge keys and gray keys, caching each key's tile."""
 
-    def __init__(self, dark, light, snap):
-        self.dark, self.light, self.snap = dark, light, snap
-        self.tiles = {}
+    def __init__(self, gray_lo, gray_hi, opening, edge, edge_snap, gray_snap):
+        self.gray_lo, self.gray_hi, self.opening = gray_lo, gray_hi, opening
+        self.edge, self.edge_snap, self.gray_snap = edge, edge_snap, gray_snap
+        self.edge_tiles, self.gray_tiles = {}, {}
 
-    def keys(self, g):
-        return cell_keys(g, self.dark, self.light, self.snap)
+    def keys(self, img):
+        real = opening((img > self.gray_lo) & (img < self.gray_hi), self.opening)
+        edge = line_keys(corners(np.where(real, 0.0, img)), self.edge, self.edge_snap)
+        gray = line_keys(corners(real.astype(np.float64)), 0.5, self.gray_snap)
+        return edge.ravel(), gray.ravel()
 
-    def tile(self, ckey):
-        t = self.tiles.get(ckey)
+    def edge_tile(self, key):
+        t = self.edge_tiles.get(key)
         if t is None:
-            t = self.tiles[ckey] = tile_of_key(ckey, self.snap)
+            t = self.edge_tiles[key] = mask_bits(line_mask(key, self.edge_snap))
+        return t
+
+    def gray_tile(self, key):
+        t = self.gray_tiles.get(key)
+        if t is None:
+            t = self.gray_tiles[key] = mask_bits(line_mask(key, self.gray_snap) & CHECKER)
         return t
 
 
-def build_tileset(video, tiler):
-    """The SETS tiles the whole video uses most, all-black first."""
-    counts = {}
-    frames = 0
-    for img in read_frames(video):
-        keys, n = np.unique(tiler.keys(corners(img)), return_counts=True)
-        for key, c in zip(keys.tolist(), n.tolist()):
-            counts[key] = counts.get(key, 0) + c
-        frames += 1
+def rank(counts, tile_of, size):
+    """The size tiles used most, tile 0 (empty) first, and their coverage."""
     use = {}
     for key, c in counts.items():
-        t = int(tiler.tile(key))
+        t = int(tile_of(key))
         use[t] = use.get(t, 0) + c
     ranked = sorted(use, key=lambda t: (-use[t], t))
-    kept = [0] + [t for t in ranked if t != 0][:SETS - 1]
-    cells = sum(use.values())
-    exact = sum(use[t] for t in kept if t in use)
-    return np.array(kept, np.uint64), len(use), exact / cells, frames
+    kept = [0] + [t for t in ranked if t != 0][:size - 1]
+    exact = sum(use[t] for t in kept if t in use) / sum(use.values())
+    kept += [0] * (size - len(kept))  # unused IDs are empty
+    return np.array(kept, np.uint64), len(use), exact
+
+
+def build_tilesets(video, tiler):
+    """The 511 edge tiles and 256 gray tiles the whole video uses most."""
+    edge_counts, gray_counts = {}, {}
+    frames = 0
+    for img in read_frames(video):
+        for keys, counts in zip(tiler.keys(img), (edge_counts, gray_counts)):
+            k, n = np.unique(keys, return_counts=True)
+            for key, c in zip(k.tolist(), n.tolist()):
+                counts[key] = counts.get(key, 0) + c
+        frames += 1
+    edge = rank(edge_counts, tiler.edge_tile, SETS)
+    gray = rank(gray_counts, tiler.gray_tile, 256)
+    return edge, gray, frames
 
 
 class Matcher:
@@ -242,7 +277,9 @@ class Matcher:
 
     def __init__(self, kept, border_weight):
         self.kept = kept
-        self.index = {int(t): i for i, t in enumerate(kept)}
+        self.index = {}
+        for i, t in enumerate(kept):
+            self.index.setdefault(int(t), i)
         self.kept_px = tile_pixels(kept)
         border = (X == 0) | (X == TILE - 1) | (Y == 0) | (Y == TILE - 1)
         self.weight = np.where(border, border_weight, 1).ravel()
@@ -306,9 +343,12 @@ def main():
                     "whole video, OUT/badapple.tar.xz for part of it)")
     ap.add_argument("--start", type=float, default=0.0, help="first second to encode")
     ap.add_argument("--seconds", type=float, help="seconds to encode (default: to the end)")
-    ap.add_argument("--dark", type=int, default=128, help="dark threshold, of 255")
-    ap.add_argument("--light", type=int, default=192, help="light threshold, of 255")
-    ap.add_argument("--snap", type=int, default=3, choices=range(1, 9), help="crossing positions per tile edge")
+    ap.add_argument("--gray-lo", type=int, default=32, help="lowest real gray, of 255")
+    ap.add_argument("--gray-hi", type=int, default=254, help="highest real gray, of 255")
+    ap.add_argument("--opening", type=int, default=7, help="source pixels of gray band dropped as antialiasing")
+    ap.add_argument("--edge", type=int, default=118, help="the hard edge's gray, of 255")
+    ap.add_argument("--edge-snap", type=int, default=7, choices=range(1, 9), help="edge crossings per tile edge")
+    ap.add_argument("--gray-snap", type=int, default=7, choices=range(1, 9), help="gray crossings per tile edge")
     ap.add_argument("--border-weight", type=int, default=4, help="weight of a border pixel when matching")
     ap.add_argument("--no-preview", action="store_true", help="skip preview.mp4")
     args = ap.parse_args()
@@ -317,27 +357,34 @@ def main():
         whole = args.start == 0 and args.seconds is None
         args.archive = "src/badapple.tar.xz" if whole else os.path.join(args.out, "badapple.tar.xz")
 
-    tiler = Tiler(args.dark / 255, args.light / 255, args.snap)
+    tiler = Tiler(args.gray_lo / 255, args.gray_hi / 255, args.opening, args.edge / 255,
+                  args.edge_snap, args.gray_snap)
     cache = os.path.join(args.out, "tileset.npz")
-    params = np.array([args.dark, args.light, args.snap])
+    params = np.array([3, args.gray_lo, args.gray_hi, args.opening, args.edge, args.edge_snap, args.gray_snap])
     t0 = time.time()
     if os.path.exists(cache) and np.array_equal(np.load(cache)["params"], params):
-        kept = np.load(cache)["kept"]
-        print(f"Tile set: {len(kept)} tiles from {cache}")
+        kept_edge, kept_gray = np.load(cache)["edge"], np.load(cache)["gray"]
+        print(f"Tile sets from {cache}")
         set_seconds = None
     else:
-        kept, distinct, exact, frames = build_tileset(args.video, tiler)
-        np.savez(cache, params=params, kept=kept)
+        (kept_edge, edge_distinct, edge_exact), (kept_gray, gray_distinct, gray_exact), frames = \
+            build_tilesets(args.video, tiler)
+        np.savez(cache, params=params, edge=kept_edge, gray=kept_gray)
         set_seconds = time.time() - t0
-        print(f"Tile set: {distinct} distinct tiles in {frames} frames; the {len(kept)} kept "
-              f"cover {100 * exact:.2f}% of cells ({set_seconds:.0f} s)")
-    match = Matcher(kept, args.border_weight)
+        print(f"Edge tiles: {edge_distinct} distinct in {frames} frames; the {len(kept_edge)} kept "
+              f"cover {100 * edge_exact:.2f}% of cells")
+        print(f"Gray tiles: {gray_distinct} distinct; the {len(kept_gray)} kept "
+              f"cover {100 * gray_exact:.2f}% of cells ({set_seconds:.0f} s)")
+    match_edge = Matcher(kept_edge, args.border_weight)
+    match_gray = Matcher(kept_gray, args.border_weight)
 
     with open(os.path.join(args.out, "tiles.bin"), "wb") as f:
+        for tile in kept_gray:
+            f.write(tile_rows(tile))
         for layer in range(2):
             for tid in range(256):
                 index = tid if layer == 0 else (0 if tid == 0 else tid + 255)
-                f.write(tile_rows(kept[index]))
+                f.write(tile_rows(kept_edge[index]))
 
     first = round(args.start * FPS)
     count = round(args.seconds * FPS) if args.seconds else None
@@ -345,37 +392,38 @@ def main():
     shown, maps = [], []
     stand_in_cells = 0
     for img in read_frames(args.video, first, count):
-        keys = tiler.keys(corners(img)).ravel()
-        bottom, top = bytearray(MAP_BYTES), bytearray(MAP_BYTES)
+        edge_keys, gray_keys = tiler.keys(img)
+        gray_map, edge1, edge2 = bytearray(MAP_BYTES), bytearray(MAP_BYTES), bytearray(MAP_BYTES)
         frame = np.empty(MAP_BYTES, np.uint64)
-        for cell, key in enumerate(keys.tolist()):
-            tile = tiler.tile(key)
-            i = match(tile)
-            stand_in_cells += int(kept[i] != tile)
-            frame[cell] = kept[i]
-            bottom[cell], top[cell] = layer_of(i)
+        for cell, (ek, gk) in enumerate(zip(edge_keys.tolist(), gray_keys.tolist())):
+            et, gt = tiler.edge_tile(ek), tiler.gray_tile(gk)
+            i, g = match_edge(et), match_gray(gt)
+            stand_in_cells += int(kept_edge[i] != et) + int(kept_gray[g] != gt)
+            frame[cell] = kept_edge[i] | kept_gray[g]
+            gray_map[cell] = g
+            edge1[cell], edge2[cell] = layer_of(i)
         shown.append(frame)
-        maps.append(bytes(bottom) + bytes(top))
+        maps.append(bytes(gray_map) + bytes(edge1) + bytes(edge2))
     count = len(maps)
     encode_seconds = time.time() - t1
 
     audio = read_audio(args.video, first, count)
     with open(os.path.join(args.out, "frames.bin"), "wb") as f:
-        f.write(b"BAD2" + struct.pack("<HHB", count, first, FPS) + bytes(7))
+        f.write(b"BAD3" + struct.pack("<HHB", count, first, FPS) + bytes(7))
         for n, m in enumerate(maps):
             f.write(m + frame_audio(audio, n))
 
     # Draw the layers back from the files: every frame must come out as encoded.
-    tiles = np.frombuffer(open(os.path.join(args.out, "tiles.bin"), "rb").read(), np.uint8).reshape(2, 256, 8)
-    layer_px = np.unpackbits(tiles, axis=2).reshape(2, 256, TILE, TILE).astype(bool)  # [layer][id][y][x]
+    tiles = np.frombuffer(open(os.path.join(args.out, "tiles.bin"), "rb").read(), np.uint8).reshape(LAYERS, 256, 8)
+    layer_px = np.unpackbits(tiles, axis=2).reshape(LAYERS, 256, TILE, TILE).astype(bool)  # [layer][id][y][x]
     data = open(os.path.join(args.out, "frames.bin"), "rb").read()[16:]
     assert len(data) == count * RECORD_BYTES
     assert b"".join(data[n * RECORD_BYTES + FRAME_BYTES:(n + 1) * RECORD_BYTES]
                     for n in range(count)) == audio, "the sound differs"
     canvas = []
     for n in range(count):
-        m = np.frombuffer(data, np.uint8, FRAME_BYTES, n * RECORD_BYTES).reshape(2, ROWS, COLS)
-        cells = layer_px[0][m[0]] | layer_px[1][m[1]]                      # [row][col][y][x]
+        m = np.frombuffer(data, np.uint8, FRAME_BYTES, n * RECORD_BYTES).reshape(LAYERS, ROWS, COLS)
+        cells = layer_px[0][m[0]] | layer_px[1][m[1]] | layer_px[2][m[2]]                     # [row][col][y][x]
         img = cells.transpose(0, 2, 1, 3).reshape(ROWS * TILE, COLS * TILE)
         want = tile_pixels(shown[n]).reshape(ROWS, COLS, TILE, TILE).transpose(0, 2, 1, 3)
         assert np.array_equal(img, want.reshape(ROWS * TILE, COLS * TILE).astype(bool)), f"frame {n} differs"
@@ -383,13 +431,13 @@ def main():
 
     print(f"Encoded {count} frames from frame {first} ({first / FPS:.2f} s) in {encode_seconds:.1f} s; "
           f"{stand_in_cells} of {count * MAP_BYTES} cells use a stand-in tile; "
-          f"{len(match.stand_ins)} distinct stand-ins")
+          f"{len(match_edge.stand_ins)} + {len(match_gray.stand_ins)} distinct stand-ins")
     print(f"Wrote tiles.bin and frames.bin ({16 + count * RECORD_BYTES:,} bytes) to {args.out}")
     write_archive(args.archive, args.out, ["tiles.bin", "frames.bin"])
     print(f"Wrote {args.archive} ({os.path.getsize(args.archive):,} bytes)")
     if set_seconds is not None:
         total = 6573
-        print(f"Estimate for all {total} frames: {set_seconds:.0f} s for the tile set, then "
+        print(f"Estimate for all {total} frames: {set_seconds:.0f} s for the tile sets, then "
               f"{encode_seconds / count * total:.0f} s to encode")
 
     if not args.no_preview:

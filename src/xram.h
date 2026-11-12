@@ -47,31 +47,33 @@ typedef struct
     ((((unsigned)(b) >> 3) << 11) | (((unsigned)(g) >> 3) << 6) | \
      (((unsigned)(alpha) >> 7) << 5) | ((unsigned)(r) >> 3))
 
-/* Bad Apple!! on two 80x60 maps of 8x8 1bpp tiles, a 640x480 canvas.
- * Layer 0 (plane 0) is the bottom map, layer 1 (plane 1) the top map. Tile 0
- * of both is all black, and black is transparent on the top layer.
+/* Bad Apple!! on three 80x60 maps of 8x8 1bpp tiles, a 640x480 canvas.
+ * Layer 0 (plane 0) draws the gray as a checkerboard on black. Layers 1 and
+ * 2 (planes 1 and 2) draw the hard white edges over it. Their tile 0 is
+ * clear, because black is transparent on them.
  *
- * Each frame is a record in ROM:frames: the two maps, then the frame's
+ * Each frame is a record in ROM:frames: the three maps, then the frame's
  * sound, 1,027 samples of 30,810 Hz 16-bit stereo. */
 
 #define MAP_COLS 80
 #define MAP_ROWS 60
 #define MAP_BYTES (MAP_COLS * MAP_ROWS)
-#define FRAME_BYTES (2 * MAP_BYTES)
+#define LAYERS 3
+#define FRAME_BYTES (LAYERS * MAP_BYTES)
 #define SOUND_BYTES 4108
 #define RECORD_BYTES (FRAME_BYTES + SOUND_BYTES)
 
 typedef struct
 {
-    uint8_t maps[2][MAP_BYTES];  /* [layer] */
+    uint8_t maps[LAYERS][MAP_BYTES];  /* [layer] */
     uint8_t sound[SOUND_BYTES];
 } record_t;
 
 typedef struct
 {
-    uint8_t tiles[2][256][8];  /* [layer], loaded from tiles.bin */
-    mode2_config_t config[2];  /* [layer] */
-    uint16_t palette[2][2];    /* [layer][color] */
+    uint8_t tiles[LAYERS][256][8];  /* [layer], loaded from tiles.bin */
+    mode2_config_t config[LAYERS];  /* [layer] */
+    uint16_t palette[LAYERS][2];    /* [layer][color] */
     record_t records[3];       /* [buffer] */
 } xram_layout_t;
 
