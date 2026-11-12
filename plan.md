@@ -816,3 +816,19 @@ starts the video. The README's screenshot then shows the title screen.
 3. The bar's art and sprites, from the chosen design, and the fade.
 4. Tablet and gamepad input.
 5. A short sample on the hardware.
+
+### Results
+
+- The encoder writes keyframes, `index.bin`, `title.bin`, and
+  `transport.bin`. Keyframes add 0.7 MB; `frames.bin` is 35.1 MB.
+- In the emulator, with the keyboard, the tablet, and a gamepad driven by
+  its script: the title screen, a lazy start from a click, a key, or a
+  button, play and pause, 10-second skips, a click on the track, the
+  volume slider, repeat, mute, the end back to the title or, with repeat
+  on, a second pass, the dissolve after 3 seconds, the pointer leaving the
+  canvas, and the transport coming back at once.
+- The volume scaler halves the level exactly at -6 dB, checked against the
+  stream.
+- Late frames over the whole video, volume lowered, transport drawn: none
+  at 8 MHz, 3 at 6 MHz. Drawing only what changed in the transport, and
+  unrolling the scaler by four, bought that margin.

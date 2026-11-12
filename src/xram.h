@@ -47,6 +47,84 @@ typedef struct
     ((((unsigned)(b) >> 3) << 11) | (((unsigned)(g) >> 3) << 6) | \
      (((unsigned)(alpha) >> 7) << 5) | ((unsigned)(r) >> 3))
 
+/* From the VGA page: Mode 5. */
+
+#define xreg_vga_mode5(...) xreg(0x1, 0x0, 0x01, 5, __VA_ARGS__)
+#define MODE5_4BPP 0x02
+#define MODE5_CUSTOM 0x38
+#define MODE5_SIZE(width, height) ((((height) / 4 - 1) << 4) | ((width) / 4 - 1))
+
+typedef struct
+{
+    int16_t x_pos_px;
+    int16_t y_pos_px;
+    uint16_t xram_sprite_ptr;
+    uint16_t palette_ptr;
+    uint8_t width_height;
+    uint8_t attributes;
+} mode5_csprite_t; /* layout */
+
+/* From the RIA page: Tablet and Gamepads. */
+
+#define xreg_ria_tablet(...) xreg(0x0, 0x0, 0x03, __VA_ARGS__)
+#define TABLET_CONTACTS 8
+#define TABLET_STATUS_HOST_CURSOR 0x01
+#define TABLET_FLAG_LEFT 0x01
+#define TABLET_FLAG_HOVER 0x80
+#define TABLET_CURSOR_OFF 0
+#define TABLET_CURSOR_ARROW 1
+
+typedef struct
+{
+    uint8_t flags;
+    uint8_t y_lo;
+    uint8_t x_lo;
+    uint8_t yx_hi;
+} tablet_contact_t;
+
+typedef struct
+{
+    uint8_t control;
+    uint8_t status;
+    uint8_t wheel;
+    uint8_t pan;
+    tablet_contact_t contact[TABLET_CONTACTS];
+} tablet_t; /* layout */
+
+#define xreg_ria_gamepad(...) xreg(0x0, 0x0, 0x02, __VA_ARGS__)
+#define GAMEPAD_PLAYERS 4
+#define GAMEPAD_DPAD_UP 0x01
+#define GAMEPAD_DPAD_DOWN 0x02
+#define GAMEPAD_DPAD_LEFT 0x04
+#define GAMEPAD_DPAD_RIGHT 0x08
+#define GAMEPAD_FEAT_CONNECTED 0x80
+#define GAMEPAD_LSTICK_LEFT 0x04
+#define GAMEPAD_LSTICK_RIGHT 0x08
+#define GAMEPAD_BTN0_A 0x01
+#define GAMEPAD_BTN0_X 0x08
+#define GAMEPAD_BTN0_Y 0x10
+#define GAMEPAD_BTN0_L1 0x40
+#define GAMEPAD_BTN0_R1 0x80
+
+typedef struct
+{
+    uint8_t dpad;
+    uint8_t sticks;
+    uint8_t btn0;
+    uint8_t btn1;
+    int8_t lx;
+    int8_t ly;
+    int8_t rx;
+    int8_t ry;
+    uint8_t l2;
+    uint8_t r2;
+} gamepad_player_t;
+
+typedef struct
+{
+    gamepad_player_t player[GAMEPAD_PLAYERS];
+} gamepad_t; /* layout */
+
 /* From the RIA page: Keyboard. */
 
 #define xreg_ria_keyboard(...) xreg(0x0, 0x0, 0x00, __VA_ARGS__)
@@ -89,6 +167,9 @@ typedef struct
 #define RING_MASK (RING_BYTES - 1)
 #define TITLE_BANDS 4
 #define TITLE_TILE_BYTES 32 /* 8x8, 4 bits a pixel */
+#define TRANSPORT_PALETTES 6
+#define TRANSPORT_BYTES 6632 /* transport.bin: the palettes, then the images */
+#define SPRITES 25
 
 typedef struct
 {
@@ -98,6 +179,10 @@ typedef struct
     uint16_t palette[LAYERS][2];               /* [layer][color] */
     uint16_t title_palette[16];
     keyboard_t keyboard;
+    tablet_t tablet;
+    gamepad_t gamepad;
+    uint8_t transport[TRANSPORT_BYTES]; /* loaded from transport.bin */
+    mode5_csprite_t sprites[SPRITES];
     union
     {
         struct
@@ -113,12 +198,18 @@ typedef struct
     } area;
 } xram_layout_t;
 
+_Static_assert(sizeof(xram_layout_t) <= 0x10000, "the layout fits in 64 KB of XRAM");
+
 #define XRAM_TILES offsetof(xram_layout_t, tiles)
 #define XRAM_CONFIG offsetof(xram_layout_t, config)
 #define XRAM_TITLE_CONFIG offsetof(xram_layout_t, title_config)
 #define XRAM_PALETTE offsetof(xram_layout_t, palette)
 #define XRAM_TITLE_PALETTE offsetof(xram_layout_t, title_palette)
 #define XRAM_KEYBOARD offsetof(xram_layout_t, keyboard)
+#define XRAM_TABLET offsetof(xram_layout_t, tablet)
+#define XRAM_GAMEPAD offsetof(xram_layout_t, gamepad)
+#define XRAM_TRANSPORT offsetof(xram_layout_t, transport)
+#define XRAM_SPRITES offsetof(xram_layout_t, sprites)
 #define XRAM_MAPS offsetof(xram_layout_t, area.video.maps)
 #define XRAM_RING offsetof(xram_layout_t, area.video.ring)
 #define XRAM_TITLE_TILES offsetof(xram_layout_t, area.title.tiles)

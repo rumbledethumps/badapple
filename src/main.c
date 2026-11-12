@@ -2,6 +2,7 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <unistd.h>
+#include "transport.h"
 #include "xram.h"
 
 /* Plays ROM:frames, made by src/encode.py.
@@ -42,6 +43,10 @@
 #define MAX_SECONDS 256
 #define KEYFRAME 1 /* a delta block's flag: clear the buffer first */
 #define SCALE_SAMPLES 128 /* samples a step of the volume scaler takes */
+#define IDLE_VSYNCS 180   /* 3 s without input while playing, then the transport fades */
+#define FADE_VSYNCS 6     /* between steps of the fade */
+#define FADE_STEPS 5
+#define SCRUB_VSYNCS 8    /* between seconds of a held scrub */
 
 enum
 {
@@ -88,7 +93,7 @@ static unsigned clear_at;    /* the XRAM address of the next group */
 static uint8_t run_left;     /* bytes left in a run that wraps the ring */
 static unsigned run_to;      /* the XRAM address they go to */
 
-/* In zero page, in copy.s, for decode_runs(). */
+/* In copy.s, for decode_runs(). */
 extern unsigned dec_map;  /* the XRAM address of the maps being decoded */
 extern uint8_t dec_limit; /* the first page of the ring where a run might wrap */
 
@@ -111,6 +116,40 @@ static bool pcm_full;               /* a PCM write filled the device since the l
 static uint8_t call;
 
 static uint8_t keys_last[11]; /* the keyboard's first 11 bytes, at the last VSYNC */
+static uint8_t pad_last[4];   /* the gamepad's dpad, sticks, btn0, btn1, at the last VSYNC */
+static uint8_t tablet_last;   /* the pointer's buttons, at the last VSYNC */
+static int pointer_x = -1, pointer_y; /* -1 until the pointer first moves */
+static bool pointer_in;   /* over the canvas: a mouse, or a pen in range */
+static bool host_cursor;  /* the emulator or web player draws the pointer */
+static uint8_t cursor;    /* the host's pointer as last set: TABLET_CURSOR_ */
+
+static uint8_t idle;      /* VSYNCs without input, while playing */
+static uint8_t fade_step; /* 0 shown, FADE_STEPS hidden */
+static uint8_t fade_wait;
+
+enum
+{
+    DRAG_NONE,
+    DRAG_TRACK,
+    DRAG_VOLUME,
+};
+static uint8_t drag;
+static uint8_t scrub_from;  /* the state before a scrub, to go back to */
+static uint8_t scrub_wait;  /* VSYNCs to the next second of a held scrub */
+
+/* What the inputs ask for. */
+enum
+{
+    ACT_NONE,
+    ACT_PLAY,     /* play or pause */
+    ACT_BACK,
+    ACT_FORWARD,
+    ACT_REPEAT,
+    ACT_MUTE,
+    ACT_LOUDER,
+    ACT_QUIETER,
+    ACT_START,    /* on the title screen only: a lazy start */
+};
 
 void copy_run(uint8_t count);     /* copy.s */
 void clear_groups(uint8_t count); /* copy.s */
@@ -538,54 +577,331 @@ static void play_pause(void)
     }
 }
 
+static void change_volume(int by)
+{
+    if (by > 0 && volume < VOLUME_FULL)
+        ++volume;
+    if (by < 0 && volume)
+        --volume;
+    muted = false;
+    set_volume();
+}
+
+/* Does what an input asks. */
+static bool act(uint8_t action)
+{
+    switch (action)
+    {
+    case ACT_PLAY:
+        if (show_state == SHOW_TITLE)
+            return start_at(0, SHOW_PLAY);
+        play_pause();
+        break;
+    case ACT_BACK:
+        if (show_state != SHOW_TITLE)
+            return skip(-SKIP_SECONDS);
+        break;
+    case ACT_FORWARD:
+        return skip(SKIP_SECONDS);
+    case ACT_REPEAT:
+        repeat = !repeat;
+        break;
+    case ACT_MUTE:
+        muted = !muted;
+        set_volume();
+        break;
+    case ACT_LOUDER:
+        change_volume(1);
+        break;
+    case ACT_QUIETER:
+        change_volume(-1);
+        break;
+    case ACT_START:
+        if (show_state == SHOW_TITLE)
+            return start_at(0, SHOW_PLAY);
+        break;
+    }
+    return true;
+}
+
+/* An input that shows the faded transport does nothing else. */
+static bool wake(void)
+{
+    bool hidden = fade_step != 0;
+    idle = 0;
+    if (hidden)
+    {
+        fade_step = 0;
+        transport_fade(0);
+    }
+    return hidden;
+}
+
 static bool key_down(const uint8_t *keys, uint8_t code)
 {
     return KEYBOARD_PRESSED(keys, code) && !KEYBOARD_PRESSED(keys_last, code);
 }
 
-/* Reads the keyboard at each VSYNC and acts on the keys that went down. On
- * the title screen, a key with nothing else to do starts the video. */
-static bool keyboard(void)
+/* The keyboard: the action of the first key that went down, or on the
+ * title screen, a start for any other key. */
+static uint8_t keyboard(void)
 {
-    uint8_t keys[sizeof(keys_last)], i;
-    bool ok = true, any;
+    static const uint8_t KEYS[][2] = {
+        {HID_KEY_SPACE, ACT_PLAY},         {HID_KEY_ARROW_LEFT, ACT_BACK}, {HID_KEY_ARROW_RIGHT, ACT_FORWARD},
+        {HID_KEY_R, ACT_REPEAT},           {HID_KEY_M, ACT_MUTE},          {HID_KEY_ARROW_UP, ACT_LOUDER},
+        {HID_KEY_ARROW_DOWN, ACT_QUIETER},
+    };
+    uint8_t keys[sizeof(keys_last)], i, action = ACT_NONE;
     RIA.step0 = 1;
     RIA.addr0 = XRAM_KEYBOARD;
     for (i = 0; i < sizeof(keys); i++)
         keys[i] = RIA.rw0;
+    for (i = 0; i < sizeof(KEYS) / sizeof(KEYS[0]) && !action; i++)
+        if (key_down(keys, KEYS[i][0]))
+            action = KEYS[i][1];
     /* KEYBOARD_NO_KEY is set while nothing is down. */
-    any = !KEYBOARD_PRESSED(keys, KEYBOARD_NO_KEY) && KEYBOARD_PRESSED(keys_last, KEYBOARD_NO_KEY);
-    if (key_down(keys, HID_KEY_SPACE))
-    {
-        if (show_state == SHOW_TITLE)
-            ok = start_at(0, SHOW_PLAY);
-        else
-            play_pause();
-    }
-    else if (key_down(keys, HID_KEY_ARROW_LEFT))
-        ok = show_state == SHOW_TITLE || skip(-SKIP_SECONDS);
-    else if (key_down(keys, HID_KEY_ARROW_RIGHT))
-        ok = skip(SKIP_SECONDS);
-    else if (key_down(keys, HID_KEY_R))
-        repeat = !repeat;
-    else if (key_down(keys, HID_KEY_M))
-    {
-        muted = !muted;
-        set_volume();
-    }
-    else if (key_down(keys, HID_KEY_ARROW_UP) || key_down(keys, HID_KEY_ARROW_DOWN))
-    {
-        if (KEYBOARD_PRESSED(keys, HID_KEY_ARROW_UP) && volume < VOLUME_FULL)
-            ++volume;
-        else if (!KEYBOARD_PRESSED(keys, HID_KEY_ARROW_UP) && volume)
-            --volume;
-        muted = false;
-        set_volume();
-    }
-    else if (any && show_state == SHOW_TITLE)
-        ok = start_at(0, SHOW_PLAY);
+    if (!action && !KEYBOARD_PRESSED(keys, KEYBOARD_NO_KEY) && KEYBOARD_PRESSED(keys_last, KEYBOARD_NO_KEY))
+        action = ACT_START;
     for (i = 0; i < sizeof(keys); i++)
         keys_last[i] = keys[i];
+    return action;
+}
+
+/* The first gamepad that is connected: the action of a button that went
+ * down; L1 and R1, or the left stick, held, scrub by seconds. */
+static uint8_t gamepad(int *scrub)
+{
+    uint8_t p, pad[4], down[4], i;
+    RIA.step0 = 1;
+    for (p = 0; p < GAMEPAD_PLAYERS; p++)
+    {
+        RIA.addr0 = XRAM_GAMEPAD + p * sizeof(gamepad_player_t);
+        for (i = 0; i < 4; i++)
+            pad[i] = RIA.rw0;
+        if (pad[0] & GAMEPAD_FEAT_CONNECTED)
+            break;
+    }
+    if (p == GAMEPAD_PLAYERS)
+        pad[0] = pad[1] = pad[2] = pad[3] = 0;
+    pad[0] &= 0x0F; /* the d-pad, without the feature bits */
+    for (i = 0; i < 4; i++)
+    {
+        down[i] = pad[i] & ~pad_last[i];
+        pad_last[i] = pad[i];
+    }
+    *scrub = (pad[2] & GAMEPAD_BTN0_R1 || pad[1] & GAMEPAD_LSTICK_RIGHT) ? 1
+             : (pad[2] & GAMEPAD_BTN0_L1 || pad[1] & GAMEPAD_LSTICK_LEFT) ? -1 : 0;
+    if (down[2] & GAMEPAD_BTN0_A)
+        return ACT_PLAY;
+    if (down[0] & GAMEPAD_DPAD_LEFT)
+        return ACT_BACK;
+    if (down[0] & GAMEPAD_DPAD_RIGHT)
+        return ACT_FORWARD;
+    if (down[0] & GAMEPAD_DPAD_UP)
+        return ACT_LOUDER;
+    if (down[0] & GAMEPAD_DPAD_DOWN)
+        return ACT_QUIETER;
+    if (down[2] & GAMEPAD_BTN0_X)
+        return ACT_MUTE;
+    if (down[2] & GAMEPAD_BTN0_Y)
+        return ACT_REPEAT;
+    if (down[2] & (GAMEPAD_BTN0_L1 | GAMEPAD_BTN0_R1) || down[1])
+        return ACT_NONE;
+    if (down[2] || down[3])
+        return ACT_START;
+    return ACT_NONE;
+}
+
+static unsigned second_at_x(int x)
+{
+    int s = (int)((long)(x - TRACK_X0) * frames / TRACK_W / FPS);
+    return s < 0 ? 0 : s >= (int)seconds ? seconds - 1 : (unsigned)s;
+}
+
+static bool scrub_to(unsigned second)
+{
+    if (show_state != SHOW_TITLE && second == (next - 1) / FPS)
+        return true;
+    return start_at(second, SHOW_PAUSE);
+}
+
+static bool scrub_end(void)
+{
+    if (scrub_from == SHOW_PLAY)
+    {
+        show_state = SHOW_PLAY;
+        ticks = 0;
+    }
+    return true;
+}
+
+static bool near(int x, int y, int cx)
+{
+    return x >= cx - DISC_R && x <= cx + DISC_R && y >= DISC_Y - DISC_R && y <= DISC_Y + DISC_R;
+}
+
+/* The tablet: the pointer, and what a left click or drag asks for. The
+ * emulator and the web player draw the pointer themselves; elsewhere the
+ * transport draws its own. */
+static bool tablet(bool *moved)
+{
+    tablet_contact_t c, check;
+    uint8_t pressed;
+    int x, y;
+    host_cursor = xram0_peek8(XRAM_TABLET + offsetof(tablet_t, status)) & TABLET_STATUS_HOST_CURSOR;
+    do
+    {
+        xram0_read(&c, XRAM_TABLET + offsetof(tablet_t, contact), sizeof(c));
+        xram0_read(&check, XRAM_TABLET + offsetof(tablet_t, contact), sizeof(c));
+    } while (c.flags != check.flags || c.x_lo != check.x_lo || c.y_lo != check.y_lo || c.yx_hi != check.yx_hi);
+    pointer_in = c.flags & (TABLET_FLAG_HOVER | TABLET_FLAG_LEFT);
+    x = (c.yx_hi & 0x0F) << 8 | c.x_lo;
+    y = (c.yx_hi >> 4) << 8 | c.y_lo;
+    *moved = x != pointer_x || y != pointer_y;
+    if (*moved && (pointer_x >= 0 || x || y))
+    {
+        pointer_x = x;
+        pointer_y = y;
+    }
+    else
+        *moved = false;
+    pressed = c.flags & TABLET_FLAG_LEFT & ~tablet_last;
+    if (!(c.flags & TABLET_FLAG_LEFT) && tablet_last & TABLET_FLAG_LEFT && drag)
+    {
+        uint8_t was = drag;
+        tablet_last = c.flags;
+        drag = DRAG_NONE;
+        return was == DRAG_TRACK ? scrub_end() : true;
+    }
+    tablet_last = c.flags;
+    if (drag == DRAG_TRACK)
+        return scrub_to(second_at_x(x));
+    if (drag == DRAG_VOLUME)
+    {
+        int v = (x - VOLUME_X0) * (int)VOLUME_FULL / VOLUME_W;
+        uint8_t want = v < 0 ? 0 : v > (int)VOLUME_FULL ? VOLUME_FULL : v;
+        if (want != volume || muted)
+        {
+            volume = want;
+            muted = false;
+            set_volume();
+        }
+        return true;
+    }
+    if (!pressed)
+        return true;
+    if (wake())
+        return true;
+    if (y < BAR_TOP)
+        return act(ACT_START);
+    if (near(x, y, BACK_X))
+        return act(ACT_BACK);
+    if (near(x, y, PLAY_X))
+        return act(ACT_PLAY);
+    if (near(x, y, FORWARD_X))
+        return act(ACT_FORWARD);
+    if (near(x, y, REPEAT_X))
+        return act(ACT_REPEAT);
+    if (near(x, y, SPEAKER_X))
+        return act(ACT_MUTE);
+    if (y >= DISC_Y - DISC_R && y <= DISC_Y + DISC_R)
+    {
+        if (x >= TRACK_X0 - 12 && x <= TRACK_X0 + TRACK_W + 12)
+        {
+            drag = DRAG_TRACK;
+            scrub_from = show_state;
+            return scrub_to(second_at_x(x));
+        }
+        if (x >= VOLUME_X0 - 8 && x <= VOLUME_X0 + VOLUME_W + 8)
+            drag = DRAG_VOLUME;
+    }
+    return true;
+}
+
+/* At each VSYNC: the inputs, the fade, and the transport's sprites. */
+static bool inputs(void)
+{
+    bool moved, ok;
+    int scrub;
+    uint8_t action;
+    transport_t t;
+    bool was_in = pointer_in;
+    ok = tablet(&moved);
+    if (moved && fade_step)
+        wake();
+    /* A pointer that leaves the canvas takes the transport with it, as on
+     * a video site. */
+    if (was_in && !pointer_in && !moved && idle < IDLE_VSYNCS)
+        idle = IDLE_VSYNCS;
+    if (moved || drag)
+        idle = 0;
+    action = keyboard();
+    if (!action)
+        action = gamepad(&scrub);
+    else
+        gamepad(&scrub);
+    if (action && !wake())
+        ok = ok && act(action);
+    if (scrub)
+    {
+        idle = 0;
+        if (fade_step)
+            wake();
+        else if (!scrub_wait--)
+        {
+            int second = show_state == SHOW_TITLE ? 0 : (int)((next - 1) / FPS) + scrub;
+            if (drag != DRAG_TRACK)
+            {
+                if (scrub_wait == 0xFF && show_state != SHOW_PAUSE)
+                    scrub_from = show_state;
+                drag = DRAG_TRACK;
+            }
+            scrub_wait = SCRUB_VSYNCS;
+            ok = ok && scrub_to(second < 0 ? 0 : second >= (int)seconds ? seconds - 1 : second);
+        }
+    }
+    else if (drag == DRAG_TRACK && !(tablet_last & TABLET_FLAG_LEFT))
+    {
+        drag = DRAG_NONE;
+        scrub_wait = 0;
+        ok = ok && scrub_end();
+    }
+
+    if (show_state == SHOW_PLAY && !drag)
+    {
+        if (idle < IDLE_VSYNCS)
+            ++idle;
+        else if (fade_step < FADE_STEPS && !fade_wait--)
+        {
+            fade_wait = FADE_VSYNCS;
+            transport_fade(++fade_step);
+        }
+    }
+    else if (fade_step)
+        wake();
+    else
+        idle = 0;
+
+    t.title = show_state == SHOW_TITLE;
+    t.playing = show_state == SHOW_PLAY || (drag == DRAG_TRACK && scrub_from == SHOW_PLAY);
+    t.repeat = repeat;
+    t.muted = muted;
+    t.frame = t.title ? 0 : next - 1;
+    t.frames = frames;
+    t.volume = volume;
+    t.volume_full = VOLUME_FULL;
+    t.pointer_x = pointer_in && !host_cursor ? pointer_x : -1;
+    t.pointer_y = pointer_y;
+    transport_draw(&t);
+    if (host_cursor)
+    {
+        uint8_t want = fade_step == FADE_STEPS ? TABLET_CURSOR_OFF : TABLET_CURSOR_ARROW;
+        if (want != cursor)
+        {
+            cursor = want;
+            xram0_poke8(XRAM_TABLET + offsetof(tablet_t, control), want);
+        }
+    }
     return ok;
 }
 
@@ -652,7 +968,12 @@ int main(void)
         xram0_write(XRAM_CONFIG + layer * sizeof(mode2_config_t), &config, sizeof(config));
     }
     xreg_ria_keyboard(XRAM_KEYBOARD);
+    xreg_ria_tablet(XRAM_TABLET);
+    xreg_ria_gamepad(XRAM_GAMEPAD);
+    cursor = TABLET_CURSOR_ARROW;
+    /* Setting the canvas clears every mode, so the sprites come after it. */
     xreg_vga_canvas(CANVAS_640X480);
+    transport_init();
     if (!show_title())
     {
         puts("ROM:title is missing.");
@@ -682,7 +1003,7 @@ int main(void)
                     ++next;
                 }
             }
-            if (!keyboard())
+            if (!inputs())
                 return 1;
         }
         if (show_state == SHOW_TITLE)

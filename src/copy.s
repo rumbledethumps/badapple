@@ -22,10 +22,11 @@
 ; ADDR0, which the caller points at the same place. With m the volume, of
 ; 256, a sample hi:lo becomes hi * m + lo * m / 256, from tables that
 ; main.c fills: vol_lo[lo] = lo * m / 256, and vol_hl[hi] and vol_hh[hi]
-; the low and high bytes of hi * m, hi signed. About 39 cycles a sample.
+; the low and high bytes of hi * m, hi signed. Four samples a pass, about
+; 36 cycles a sample.
 ;
 ; Eight bytes a pass in the copy, about 8.6 cycles a byte. The counters
-; are in zero page.
+; are in RAM: the compiler's own variables fill zero page.
 
 RW0 = $ffe4
 ADDR0 = $ffe6
@@ -80,10 +81,7 @@ clear_groups:
     rts
 
 .section .text.scale_samples,"ax",@progbits
-.globl scale_samples
-scale_samples:
-    sta mos8(count)
-1:
+.macro scale_one
     ldx RW1                 ; lo
     ldy RW1                 ; hi
     clc
@@ -93,18 +91,42 @@ scale_samples:
     lda vol_hh,y
     adc #0
     sta RW0
-    dec mos8(count)
+.endm
+.globl scale_samples
+scale_samples:
+    sta count
+    and #3
+    beq 2f
+    sta budget              ; the 1 to 3 samples before the groups of 4
+1:
+    scale_one
+    dec budget
     bne 1b
+2:
+    lda count
+    lsr
+    lsr
+    beq 4f
+    sta count
+3:
+    scale_one
+    scale_one
+    scale_one
+    scale_one
+    dec count
+    beq 4f
+    jmp 3b
+4:
     rts
 
 .section .text.decode_runs,"ax",@progbits
 .globl decode_runs
 decode_runs:
     lda #0
-    sta mos8(budget)
+    sta budget
 .Lrun:
     lda ADDR1+1
-    cmp mos8(dec_limit)
+    cmp dec_limit
     bcc .Lroom
     lda #2
     rts
@@ -120,25 +142,25 @@ decode_runs:
 .Lstart:
     clc                     ; ADDR0 = dec_map + offset
     txa
-    adc mos8(dec_map)
+    adc dec_map
     sta ADDR0
     tya
-    adc mos8(dec_map+1)
+    adc dec_map+1
     sta ADDR0+1
     ldy RW1                 ; count
-    sty mos8(count)
+    sty count
     copy_y
     clc                     ; stop after about 256 bytes
-    lda mos8(budget)
-    adc mos8(count)
-    sta mos8(budget)
+    lda budget
+    adc count
+    sta budget
     bcs .Lpause
     jmp .Lrun
 .Lpause:
     lda #0
     rts
 
-.section .zp.bss.decode_runs,"aw",@nobits
+.section .bss.decode_runs,"aw",@nobits
 .globl dec_map
 .globl dec_limit
 dec_map:

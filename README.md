@@ -2,7 +2,9 @@
 
 The Bad Apple!! shadow-art video on the
 [Picocomputer 6502](https://picocomputer.github.io/), all 6573 frames at
-30 fps, as 640x480 black-and-white tiles.
+30 fps, as 640x480 black-and-white tiles, with a title screen and a
+transport: play and pause, 10-second skips, scrubbing, repeat, and
+volume, from a mouse, pen, touchscreen, gamepad, or keyboard.
 
 The soundtrack plays through the PCM audio device of RP6502 0.43 and
 later. On older versions the player prints `No PCM device found.` and
@@ -13,7 +15,7 @@ preset: llvm-mos/Release
 publish: badapple.zip
 frames: 538
 -->
-[![Bad Apple!!, frame 268](https://rumbledethumps.github.io/badapple/badapple/screenshot.png)](https://rumbledethumps.github.io/badapple/badapple/)
+[![Bad Apple!!, the title screen](https://rumbledethumps.github.io/badapple/badapple/screenshot.png)](https://rumbledethumps.github.io/badapple/badapple/)
 
 [Play it in your browser](https://rumbledethumps.github.io/badapple/badapple/).
 
@@ -83,11 +85,20 @@ starts, and do not change.
 - `tiles.bin`, 6,144 bytes: 256 tiles for each of the three planes, 8
   bytes each, one byte per row, leftmost pixel in the high bit. The ROM
   loads it into XRAM before the program starts.
-- `frames.bin`: a 16-byte header (`BAD4`, the frame count, the first
+- `frames.bin`: a 16-byte header (`BAD5`, the frame count, the first
   source frame, the frame rate, and the length of frame 0's delta block),
   then for each frame its delta block and its sound, 4,108 bytes, as
   described under [The audio](#the-audio). The ROM carries it as the
   named asset `ROM:frames`.
+- `index.bin`: for each second, the file offset of its first frame and
+  the length of that frame's delta block, 6 bytes, 1.3 KB in all. The ROM
+  carries it as `ROM:index`.
+- `title.bin`: the title screen, from `src/title.py`, described under
+  [The title screen](#the-title-screen). The ROM carries it as
+  `ROM:title`.
+- `transport.bin`: the transport's palettes and images, from
+  `src/transport.py`. The ROM loads it into XRAM before the program
+  starts.
 
 A frame's three 80x60 maps, one tile number per byte, are 14,400 bytes,
 but few of them change from frame to frame. The player keeps two map
@@ -95,10 +106,12 @@ buffers, so the buffer that a frame decodes into still holds the frame two
 before it, and the delta block holds only the runs that change it: a
 2-byte map offset, a count of 1 to 255, and that many tile numbers, with
 gaps of up to four unchanged bytes carried in the run. FF FF ends the
-block, which starts with the length of the next frame's block. Frames 0
-and 1 are deltas against all zeros. The delta blocks average 1,126 bytes a
-frame, 5,647 at most, and 7.4 MB in all, against 94.7 MB of maps. With the
-sound, `frames.bin` is 34.4 MB.
+block, which starts with the length of the next frame's block and a flag
+byte. The first two frames of each second are keyframes, against cleared
+maps, flagged so the player clears the buffer first: playback can start
+at any second. The delta blocks average 1,235 bytes a frame, 5,648 at
+most, and 8.1 MB in all, against 94.7 MB of maps. With the sound,
+`frames.bin` is 35.1 MB.
 
 The archive is 30.0 MB, and Git keeps it, so the build needs no source
 video and no encoder. After writing the files, the encoder plays the
@@ -109,19 +122,24 @@ soundtrack.
 
 ## The player
 
-`src/main.c` plays `ROM:frames` in a loop:
+`src/main.c` plays `ROM:frames`:
 
 - **PCM first.** The player opens `PCM:30810,16,2` before anything else.
   When it cannot, it prints `No PCM device found.` and stops.
+- **The title screen** shows at start, and again at the end unless repeat
+  is on, with the transport over it.
 - **A stream ring.** `read_xram()` reads the file into a 16 KB ring in
   XRAM, 4 to 8 KB a read, whenever the ring has room.
 - **Decoding in the 6502.** Once a frame's delta block and sound are both
   in the ring, the 6502 applies the runs to the back map buffer:
   `src/copy.s` reads the ring through portal 1 and writes the maps through
-  portal 0, eight bytes a pass, about 8.6 cycles a byte, with its counters
-  in zero page. It stops after about 256 bytes, so the main loop can check
-  VSYNC between steps. Near the end of the ring, where a run could wrap,
-  C applies one run at a time.
+  portal 0, eight bytes a pass, about 8.6 cycles a byte. It stops after
+  about 256 bytes, so the main loop can check VSYNC between steps. Near
+  the end of the ring, where a run could wrap, C applies one run at a
+  time. A keyframe's buffer is cleared first, about 1 KB a step.
+- **Seeking.** `ROM:index` is read into 6502 RAM at start. To start at a
+  second, the player empties the PCM device, moves to that second's place
+  in the file, fills the ring, and decodes its keyframe.
 - **Double buffering.** One map buffer is on screen while the next frame
   decodes into the other.
 - **VSYNC.** A frame is shown by pointing all three planes at its maps.
@@ -134,6 +152,9 @@ soundtrack.
   up instead of stretching.
 - **Sound.** `write_xram()` sends each frame's sound from the ring to the
   PCM device, in order, so the samples never pass through 6502 RAM.
+- **Volume.** Below full volume, `src/copy.s` scales each frame's sound in
+  place in the ring before it is sent, about 39 cycles a sample, from
+  tables in 6502 RAM: thirteen steps of about 3 dB, and mute.
 - **No waiting on calls.** The player starts each API call itself, through
   the RIA registers, and goes on with its loop, decoding and watching
   VSYNC, while the call runs. When `RIA.busy` clears, it takes the result
@@ -141,17 +162,51 @@ soundtrack.
 - **Feeding the device.** Nothing feeds the PCM device during a read, and
   its 4,096-byte buffer plays for 33 ms. So the player fills the device
   before every read, and at every VSYNC.
-- **Each pass starts in sync.** Both map buffers are cleared, the ring
-  fills, and frame 0 decodes, then shows at a VSYNC, and its sound starts
-  right after it. At the end, the player sends the rest of the sound,
-  waits for it to play, and starts the next pass the same way.
 
-XRAM holds the tiles, 6,144 bytes, the two map buffers, 28,800, and the
-ring, 16,384: 51.4 KB, leaving about 14 KB.
+### The title screen
 
-In the emulator, over the whole video, no frame was late at the 6502's
-8 MHz, and none at 4 MHz either. At 3 MHz, 19 frames were late. A
-10-second sample played cleanly on an RP6502-PICO.
+`src/title.py` sets the credits in Shippori Mincho, antialiased, in 4-bit
+tiles on plane 0: black, and white, butter, and lilac in five steps each.
+Antialiased type makes about 800 distinct tiles, so plane 0 runs in four
+bands of scanlines, each a mode 2 layer with 256 tiles of its own, all
+reading one map. The 32 KB of tiles and the map are read over the video's
+map buffers and ring, which the title screen does not use, and planes 1
+and 2 move off the canvas. The Greek of Μμ is set in Noto Serif, which
+Mincho lacks. The fonts are under the SIL Open Font License, and only the
+encoder needs them.
+
+### The transport
+
+Gel discs, drawn by `src/transport.py` and shown as mode 5 sprites on the
+sprite layer of plane 2, over the video: back 10 seconds, play or pause,
+forward 10 seconds, the track with the playhead and the time, repeat, the
+speaker, which mutes, and the volume. Each image is drawn large and scaled
+down, then set in three tones of its palette, its pastel, charcoal, and
+one between them, so its edges are smooth.
+
+| | Mouse, pen, or touch | Gamepad | Keyboard |
+|---|---|---|---|
+| Play, pause | the play disc | A | Space |
+| Back, forward 10 s | the discs | d-pad left, right | left, right arrows |
+| Scrub | drag the playhead, or click the track | hold L1 or R1, or the left stick | |
+| Repeat | the repeat disc | Y | R |
+| Volume | drag the slider | d-pad up, down | up, down arrows |
+| Mute | the speaker | X | M |
+
+On the title screen, a click above the transport, or any other key or
+button, starts the video. While the video plays, the transport and the
+pointer dissolve after 3 seconds without input, or at once when the
+pointer leaves the canvas: each palette holds its tones in five ranks of
+an ordered dither, and the ranks turn clear one at a time. They come back
+at once on any input, which then does nothing else. The emulator and the
+web player draw their own pointer; elsewhere the transport draws one.
+
+### Memory
+
+XRAM holds the video's tiles, 6,144 bytes, the two map buffers, 28,800,
+and the ring, 16,384, or in their place the title screen's tiles and map,
+37,568; the transport's palettes and images, 6,632, and its 25 sprites;
+the keyboard, tablet, and gamepad; and the configurations and palettes.
 
 ## The audio
 
@@ -180,7 +235,7 @@ stereo, 16 bits**.
 
 At 30,810 Hz, stereo, and 16 bits, the soundtrack is 123,240 bytes per
 second and 27.0 MB for its 219 seconds. With the delta blocks, the player
-reads about 157,000 bytes per second.
+reads about 160,000 bytes per second.
 
 ## Building
 
@@ -193,12 +248,17 @@ cmake --build --preset llvm-mos/Release
 ```
 
 The build unpacks `src/badapple.tar.xz` into the build folder, and writes
-the 34 MB ROM to `build/llvm-mos/release/badapple/badapple.rp6502`.
+the 35 MB ROM to `build/llvm-mos/release/badapple/badapple.rp6502`.
 
 ### Encoding the video
 
-Encoding needs Python 3 with numpy, ffmpeg, and
-[yt-dlp](https://github.com/yt-dlp/yt-dlp). The source video stays in
+Encoding needs Python 3 with numpy and Pillow, ffmpeg,
+[yt-dlp](https://github.com/yt-dlp/yt-dlp), and, for the title screen and
+the transport's digits, the fonts
+[Shippori Mincho](https://fonts.google.com/specimen/Shippori+Mincho)
+(SemiBold and ExtraBold) and
+[Noto Serif](https://fonts.google.com/noto/specimen/Noto+Serif) (the
+variable font, `NotoSerif.ttf`) in `data/fonts/`. The source video stays in
 `data/`, which Git ignores. Download it, then encode it:
 
 ```text
@@ -225,7 +285,7 @@ the other options.
   configuration, or run
   `build/llvm-mos/release/badapple/rp6502-emu build/llvm-mos/release/badapple/badapple.rp6502`.
 - **Web player.** The build also writes the web player to
-  `build/llvm-mos/release/web/badapple/`, with the 34 MB ROM. The
+  `build/llvm-mos/release/web/badapple/`, with the 35 MB ROM. The
   RP6502-WEB launch configuration serves it and opens it in a browser.
 - **Test.** `ctest --test-dir build/llvm-mos/release` runs the `play`
   test: two seconds in the emulator, which passes when the player finds
@@ -237,10 +297,10 @@ files, as [Local Files](https://picocomputer.github.io/sdk.html) in the SDK
 describes, for example in a `CMakeUserPresets.json`, which Git ignores.
 
 On each push to `main`, `.github/workflows/web.yml` builds the ROM and
-publishes the web player at the top of this page to GitHub Pages. The
-player starts at the first click on it, with `autoplay: 'off'`, so the
-song plays from the beginning. Its picture is the player's screen after
-538 VSYNCs, frame 268.
+publishes the web player at the top of this page to GitHub Pages. The ROM
+starts when the page loads, on its title screen, with no overlay, and the
+browser allows sound at the first click on the player. Its picture is the
+title screen, after 538 VSYNCs.
 
 ## Updating the tools
 

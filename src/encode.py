@@ -24,7 +24,7 @@ one, counting pixels on the tile's
 border BORDER_WEIGHT times, so outlines stay continuous across tiles.
 
 Output, in ARCHIVE, which the build unpacks: tiles.bin, frames.bin,
-  index.bin, and title.bin, below. For the whole video it is src/badapple.tar.xz, the archive the
+  index.bin, title.bin, and transport.bin, below. For the whole video it is src/badapple.tar.xz, the archive the
   build uses; for part of it, OUT/badapple.tar.xz. The archive has fixed
   times and owners, so the same video and settings give the same bytes.
 
@@ -54,6 +54,7 @@ Output, in OUT:
   index.bin    for each second, the file offset of its first frame (4
                bytes) and the length of that frame's delta block (2 bytes).
   title.bin    the title screen, from src/title.py.
+  transport.bin  the transport's palettes and images, from src/transport.py.
   title.png    the title screen as the VGA would draw it.
   preview.mp4  the encoded frames as the three layers draw them, with the
                soundtrack of the same span.
@@ -75,6 +76,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import title  # noqa: E402
+import transport  # noqa: E402
 
 SRC_W, SRC_H = 512, 384
 COLS, ROWS, TILE = 80, 60, 8
@@ -528,7 +530,8 @@ def main():
     print(f"Wrote tiles.bin and frames.bin ({len(data):,} bytes) to {args.out}; delta blocks "
           f"{sum(lengths):,} bytes, {sum(lengths) / count:.0f} a frame on average, {max(lengths):,} at most")
     print(title.build(args.out, args.fonts))
-    write_archive(args.archive, args.out, ["tiles.bin", "frames.bin", "index.bin", "title.bin"])
+    print(transport.build(args.out, args.fonts))
+    write_archive(args.archive, args.out, ["tiles.bin", "frames.bin", "index.bin", "title.bin", "transport.bin"])
     print(f"Wrote {args.archive} ({os.path.getsize(args.archive):,} bytes)")
     if set_seconds is not None:
         total = 6573
