@@ -157,8 +157,9 @@ stereo, 16 bits**.
   every copy that this port can use. A rate of 24 kHz or less would start
   to cut real content between 11 and 15 kHz, the cymbals and hi-hats.
 - **16 bits is plenty.** The master is loud: its level averages −8.4 dBFS,
-  and its peaks reach full scale. The resampler lowers the gain about 1 dB,
-  so that its filter does not clip.
+  and its peaks reach full scale. Decoded, the AAC overshoots to
+  +2.05 dBFS, so the encoder lowers it 2.5 dB, and no sample clips. ffmpeg
+  resamples it with soxr and dithers it to 16 bits.
 
 At 30,810 Hz, stereo, and 16 bits, the soundtrack is 123,240 bytes per
 second and 27.0 MB for its 219 seconds. With the video, the player reads

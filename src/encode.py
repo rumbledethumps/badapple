@@ -36,8 +36,10 @@ Output, in OUT:
                reads a frame and its sound together: the three 80x60 maps,
                layers 0, 1, 2, one tile ID per byte, 14,400 bytes, then
                the frame's sound, 1027 samples, 4108 bytes. The sound is raw
-               PCM, 30,810 Hz, 16-bit signed little-endian, stereo, 1 dB
-               lower so the resampler does not clip. Niconico's AAC encoder
+               PCM, 30,810 Hz, 16-bit signed little-endian, stereo,
+               resampled with soxr and dithered to 16 bits. The decoded
+               AAC peaks at +2.05 dBFS, so it is 2.5 dB lower: nothing
+               clips here, and the RIA's resampler has 0.45 dB more. Niconico's AAC encoder
                kept nothing above about 15.4 kHz, and a rate carries up to
                half of itself, so 30.8 kHz carries it all; 30,810 Hz is the
                next rate with a whole number of samples a frame.
@@ -314,7 +316,8 @@ def read_audio(video, first, count):
     """The soundtrack of count frames from frame first, as raw PCM."""
     raw = subprocess.run(
         ["ffmpeg", "-v", "error", "-i", video, "-ss", f"{first / FPS:.6f}", "-t", f"{count / FPS:.6f}",
-         "-vn", "-af", "volume=-1dB", "-ar", str(AUDIO_RATE), "-ac", "2", "-f", "s16le", "-"],
+         "-vn", "-af", f"volume=-2.5dB,aresample={AUDIO_RATE}:resampler=soxr:precision=28:dither_method=triangular",
+         "-ar", str(AUDIO_RATE), "-ac", "2", "-f", "s16le", "-"],
         capture_output=True, check=True).stdout
     size = count * SOUND_BYTES
     return raw[:size] + bytes(max(0, size - len(raw)))
