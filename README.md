@@ -34,63 +34,69 @@ The source is Niconico's 512x384 stream of `sm8628149`: 30 fps, 6573 frames,
 219.1 seconds. It is shadow art: hard black-and-white silhouettes, with soft
 gray where the animation draws motion blur and glows.
 
-### Marching squares
+### Hard edges over real gray
 
-The VGA system draws each frame from two maps of 8x8 1bpp tiles
-([mode 2](https://picocomputer.github.io/vga.html)), 80x60 tiles on a
-640x480 canvas. `src/encode.py` picks the tiles:
+The VGA system draws each frame on three planes of 8x8 1bpp tiles
+([mode 2](https://picocomputer.github.io/vga.html)), 80x60 tiles each on
+a 640x480 canvas. `src/encode.py` picks the tiles:
 
-1. **Corner samples.** Each frame is averaged down to an 81x61 grid, one
+1. **Real gray.** Source pixels from 31 to 254 of 255 are gray. Much of
+   that gray is a thin band along a hard edge, its antialiasing. An
+   opening drops it: the gray shrinks by 12 source pixels, then what is
+   left grows back. A band thinner than that is gone, and wide gray, the
+   motion blur, glows, and shadows, comes back.
+2. **Corner samples.** Each frame is averaged down to an 81x61 grid, one
    sample at each corner of the 80x60 cells. Each sample is the average of
-   a box one cell wide around its corner, so a soft edge gives it a gray
-   value between black and white.
-2. **Two outlines.** In each cell, marching squares finds where two outlines
-   cross the cell's edges: a dark line at gray 128 of 255 and a light line
-   at 192. Each crossing is interpolated between the cell's corners and
-   snapped to one of three positions along the tile edge. Two cells that
-   share an edge compute the same crossings from the same two corners, so
-   outlines join up from tile to tile.
-3. **Three levels.** The outlines split each tile into black (darker than
-   the dark line), white (lighter than the light line), and a checkerboard
-   fill, every other pixel, between them. The fill is a hint of the motion
-   blur and the glows, and the silhouettes stay sharp.
+   a box one cell wide around its corner.
+3. **Hard edges, planes 1 and 2.** In each cell, marching squares finds
+   where the outline at gray 127 crosses the cell's edges. Each crossing
+   is interpolated between the cell's corners and snapped to one of seven
+   positions along the tile edge. Two cells that share an edge compute the
+   same crossings from the same two corners, so outlines join up from tile
+   to tile. The light side of the outline is white, and the rest is clear,
+   as is everything inside the real gray.
+4. **Gray, plane 0.** The real gray gets an outline of its own, made the
+   same way, and is drawn as a checkerboard, every other pixel, on black.
+   Plane 0 is opaque, so it is also the black under everything.
 
-### 511 tiles for the whole video
+### Tiles for the whole video
 
-Mode 2 holds 256 tiles for each layer, and the player uses two layers, each
-with its own tiles. Tile 0 of both layers is all black. Black is
-transparent on the top layer, so each cell shows either a top tile over the
-bottom layer's tile 0, or a bottom tile through the top layer's tile 0.
-That gives 511 different tiles on screen, with no change to the tiles
-during playback.
+Mode 2 holds 256 tiles for each plane. They load once, before the video
+starts, and do not change.
 
-The whole video needs 862 different tiles. The 511 that it uses most cover
-99.93% of its 31.5 million cells. Each other cell shows the nearest of the
-511: the one with the fewest different pixels, where a pixel on the tile's
-border counts four times. A small error inside a tile is hard to see, but
-a step in an outline where two tiles meet is easy to see. On average a
-frame is off from its exact tiles by about 6 of its 307,200 pixels.
+- **Edges.** Planes 1 and 2 share the edge tiles. Tile 0 of both is
+  clear, so a cell shows a tile from one or the other, which gives 511.
+  The whole video uses 466, so every edge is exact.
+- **Gray.** Plane 0 holds the 256 gray tiles used most, with tile 0 all
+  black. The whole video uses 328. The next 45 go in the 45 spare edge
+  slots: a checkerboard tile looks the same on plane 1 or 2, over plane
+  0's black tile, in a cell with no edge.
+- **Stand-ins.** A cell whose tiles did not fit shows the nearest kept
+  tile: the one with the fewest different pixels, where a pixel on the
+  tile's border counts four times, because a step in an outline where two
+  tiles meet is easy to see. 1,339 of the video's 31.5 million cells use
+  a stand-in.
 
 `src/encode.py` writes two files, and packs them into
 `src/badapple.tar.xz` for the build:
 
-- `tiles.bin`, 4096 bytes: the 256 bottom tiles, then the 256 top tiles,
-  8 bytes each, one byte per row, leftmost pixel in the high bit. The ROM
+- `tiles.bin`, 6,144 bytes: 256 tiles for each of the three planes, 8
+  bytes each, one byte per row, leftmost pixel in the high bit. The ROM
   loads it into XRAM before the program starts.
-- `frames.bin`: a 16-byte header (`BAD2`, the frame count, the first
-  source frame, and the frame rate), then a 13,708-byte record for each
-  frame: the 80x60 bottom map and the 80x60 top map, one tile number per
-  byte, 9,600 bytes, then the frame's sound, 4,108 bytes, as described
+- `frames.bin`: a 16-byte header (`BAD3`, the frame count, the first
+  source frame, and the frame rate), then an 18,508-byte record for each
+  frame: the three 80x60 maps, planes 0, 1, and 2, one tile number per
+  byte, 14,400 bytes, then the frame's sound, 4,108 bytes, as described
   under [The audio](#the-audio). With picture and sound in one record, the
   player reads them together, in large reads, from one file position.
-  That is 411,240 bytes per second, and 90.1 MB for the whole video. The
+  That is 555,240 bytes per second, and 121.7 MB for the whole video. The
   ROM carries it as the named asset `ROM:frames`.
 
-The archive is 28.3 MB, and Git keeps it, so the build needs no source
-video and no encoder. After writing the files, the encoder draws every frame back
-from them, the way the two layers do, and checks that each one comes out as
-encoded. It also writes `preview.mp4` in `data/encoded/`, the encoded frames
-with the soundtrack.
+The archive is 28.6 MB, and Git keeps it, so the build needs no source
+video and no encoder. After writing the files, the encoder draws every
+frame back from them, the way the three planes do, and checks that each
+one comes out as encoded. It also writes `preview.mp4` in
+`data/encoded/`, the encoded frames with the soundtrack.
 
 ## The player
 
@@ -101,7 +107,7 @@ with the soundtrack.
 - **Triple buffering.** XRAM holds three records. One is on screen, and
   `read_xram()` loads up to two frames ahead of it, straight from the ROM,
   so one slow read does not hold up the picture.
-- **VSYNC.** A frame is shown by pointing both layers at its maps. The
+- **VSYNC.** A frame is shown by pointing all three planes at its maps. The
   display runs at 60 Hz, so a frame lasts two VSYNCs. The player keeps the
   last VSYNC count in a static, and at every second change it shows the
   next frame right away, in the 1.4 ms before the first scanline, so the
@@ -119,16 +125,16 @@ with the soundtrack.
 - **Feeding the device.** Nothing feeds the PCM device during a read, and
   its 4,096-byte buffer plays for 33 ms. So the player fills the device
   before every read, and at every VSYNC, and reads each record in two
-  halves, about 15 ms each on an RP6502-PICO.
+  halves, about 9 ms each on an RP6502-PICO.
 - **Each pass starts in sync.** Frame 0 loads, then shows at a VSYNC, and
   its sound starts right after it. At the end, the player sends the rest
   of the sound, waits for it to play, and starts the next pass the same
   way.
 
-Measured on an RP6502-PICO, reading from its USB drive, with an earlier
-32 kHz encoding: reads ran at 460 kB/s and took 91% of the time. At 80% of
-the frame changes, both spare buffers were loaded, at the rest one, and
-never none. The PCM device never fell below 360 bytes, 2.8 ms of sound.
+Measured on an RP6502-PICO, reading 18,508-byte records from its USB
+drive: reads ran at 1,018 kB/s and took 55% of the time. At 149 of 150
+frame changes, both spare buffers were loaded, at the other one, and never
+none. The PCM device never fell below about 1,860 bytes, 15 ms of sound.
 
 ## The audio
 
@@ -156,8 +162,7 @@ stereo, 16 bits**.
 
 At 30,810 Hz, stereo, and 16 bits, the soundtrack is 123,240 bytes per
 second and 27.0 MB for its 219 seconds. With the video, the player reads
-411,240 bytes per second. An RP6502-PICO moves up to 800 KB per second
-from a file to XRAM.
+555,240 bytes per second.
 
 ## Building
 
@@ -170,7 +175,7 @@ cmake --build --preset llvm-mos/Release
 ```
 
 The build unpacks `src/badapple.tar.xz` into the build folder, and writes
-the 90 MB ROM to `build/llvm-mos/release/badapple/badapple.rp6502`.
+the 122 MB ROM to `build/llvm-mos/release/badapple/badapple.rp6502`.
 
 ### Encoding the video
 
@@ -184,8 +189,8 @@ yt-dlp -f "video-h264-360p-1+audio-aac-128kbps" -o "data/sm8628149-512x384.%(ext
 python3 src/encode.py data/sm8628149-512x384.mp4
 ```
 
-The whole video encodes in about a minute, plus 30 seconds the first time
-to build the tile set, which the encoder caches in
+The whole video encodes in about two and a half minutes, plus two minutes
+the first time to build the tile sets, which the encoder caches in
 `data/encoded/tileset.npz`. The encoder writes `src/badapple.tar.xz`, and
 the same video and settings give the same archive, byte for byte, so Git
 sees a change only when the encoding changes.
@@ -202,15 +207,11 @@ the other options.
   configuration, or run
   `build/llvm-mos/release/badapple/rp6502-emu build/llvm-mos/release/badapple/badapple.rp6502`.
 - **Web player.** The build also writes the web player to
-  `build/llvm-mos/release/web/badapple/`, with the 90 MB ROM. The
+  `build/llvm-mos/release/web/badapple/`, with the 122 MB ROM. The
   RP6502-WEB launch configuration serves it and opens it in a browser.
 - **Test.** `ctest --test-dir build/llvm-mos/release` runs the `play`
   test: two seconds in the emulator, which passes when the player finds
   its ROM assets.
-- **On a machine.** The 90 MB ROM is slow to send to a machine over its
-  console, so `-DBADAPPLE_TEST=ON` builds a small ROM that reads
-  `frames.bin` from the current directory instead. Copy
-  `data/encoded/frames.bin` to the machine's drive, then run that ROM.
 
 Until the release with PCM audio, the emulator and the web player from the
 rp6502 CI builds play the sound. Set `RP6502_EMU` and `RP6502_WEB` to their

@@ -4,10 +4,6 @@ include(${CMAKE_CURRENT_LIST_DIR}/tools/rp6502.cmake)
 
 project(BADAPPLE C)
 
-# A test build reads frames.bin from the current directory, for a ROM small
-# enough to upload to a machine quickly.
-option(BADAPPLE_TEST "Read frames.bin from the current directory instead of the ROM" OFF)
-
 add_executable(badapple)
 rp6502_align(badapple "XRAM_.*")
 rp6502_asset(badapple help src/help.txt)
@@ -26,11 +22,7 @@ if(EXISTS ${BADAPPLE_ARCHIVE})
         VERBATIM
     )
     rp6502_asset(badapple XRAM(XRAM_TILES) ${BADAPPLE_DATA}/tiles.bin)
-    if(BADAPPLE_TEST)
-        target_compile_definitions(badapple PRIVATE BADAPPLE_TEST)
-    else()
-        rp6502_asset(badapple frames ${BADAPPLE_DATA}/frames.bin)
-    endif()
+    rp6502_asset(badapple frames ${BADAPPLE_DATA}/frames.bin)
     rp6502_test(NAME play COMMAND tests/play.txt $<TARGET_PROPERTY:badapple,RP6502_ROM>)
 else()
     message(WARNING "No src/badapple.tar.xz. Run src/encode.py first.")

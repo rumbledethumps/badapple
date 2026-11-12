@@ -2,7 +2,6 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <unistd.h>
-#include "stats.h"
 #include "xram.h"
 
 /* Plays ROM:frames, made by src/encode.py, in a loop. Each frame is a
@@ -27,13 +26,7 @@
 #define AHEAD 2 /* frames loaded ahead of the one on screen */
 #define READ_BYTES (RECORD_BYTES / 2)
 
-/* A test build, BADAPPLE_TEST, reads frames.bin from the current directory
- * instead of the ROM, so the ROM stays small enough to upload quickly. */
-#ifdef BADAPPLE_TEST
-#define FRAMES_PATH "frames.bin"
-#else
 #define FRAMES_PATH "ROM:frames"
-#endif
 
 enum
 {
@@ -104,7 +97,6 @@ static void finish_call(void)
         }
         break;
     case CALL_READ:
-        stats_read_done(n, pcm_fd);
         if (n > 0 && (got += n) == RECORD_BYTES)
         {
             sound_len[load] = SOUND_BYTES;
@@ -127,11 +119,8 @@ static void start_next_call(void)
                    XRAM_RECORDS + sound_play * RECORD_BYTES + FRAME_BYTES + sound_sent,
                    sound_len[sound_play] - sound_sent, pcm_fd);
     else if (ahead < AHEAD && next + ahead < frames && !sound_len[load])
-    {
-        stats_read_start();
         start_call(CALL_READ, RIA_OP_READ_XRAM, XRAM_RECORDS + load * RECORD_BYTES + got,
                    got < READ_BYTES ? READ_BYTES - got : RECORD_BYTES - got, frames_fd);
-    }
 }
 
 /* Every pass starts the same way, so sound and picture start together:
@@ -168,7 +157,6 @@ static bool start_pass(void)
         for (i = 0; i < LAYERS; i++)
             xreg_vga_mode2(MODE2_1BPP | MODE2_8X8, XRAM_CONFIG + i * sizeof(mode2_config_t), i);
     }
-    stats_start();
     vsync = ria_vsync();
     while (ria_vsync() == vsync)
         ;
@@ -242,7 +230,6 @@ int main(void)
         return 1;
     while (1)
     {
-        stats_poll();
         if (ria_vsync() != vsync)
         {
             ++vsync;
@@ -256,7 +243,6 @@ int main(void)
                         return 1;
                     continue;
                 }
-                stats_due(ahead);
                 if (ahead)
                 {
                     front = after(front);
@@ -266,14 +252,11 @@ int main(void)
                     ++next;
                 }
             }
-            stats_vsync();
         }
         if (RIA.busy & 0x80)
             continue;
         if (call != CALL_NONE)
             finish_call();
-        if (pcm_full)
-            stats_print(next);
         start_next_call();
     }
 }

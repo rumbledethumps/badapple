@@ -16,8 +16,11 @@ mode 2 layers:
   EDGE, snapped to EDGE_SNAP positions, clear inside the real gray. 511
   tiles from two layers of 256; tile 0 of both is clear.
 
-Each layer set holds the tiles the whole video uses most. A cell whose tile
-is not among them shows the nearest one, counting pixels on the tile's
+Each layer set holds the tiles the whole video uses most. Spare slots on
+layers 1 and 2 take the gray tiles that did not fit on layer 0: a
+checkerboard tile looks the same there, over layer 0's black tile 0, in a
+cell with no edge. A cell whose tile is not among them shows the nearest
+one, counting pixels on the tile's
 border BORDER_WEIGHT times, so outlines stay continuous across tiles.
 
 Output, in ARCHIVE, which the build unpacks: tiles.bin and frames.bin,
@@ -244,32 +247,28 @@ class Tiler:
         return t
 
 
-def rank(counts, tile_of, size):
-    """The size tiles used most, tile 0 (empty) first, and their coverage."""
+def rank(counts, tile_of):
+    """Every tile but the empty one, most used first, and its uses."""
     use = {}
     for key, c in counts.items():
         t = int(tile_of(key))
         use[t] = use.get(t, 0) + c
-    ranked = sorted(use, key=lambda t: (-use[t], t))
-    kept = [0] + [t for t in ranked if t != 0][:size - 1]
-    exact = sum(use[t] for t in kept if t in use) / sum(use.values())
-    kept += [0] * (size - len(kept))  # unused IDs are empty
-    return np.array(kept, np.uint64), len(use), exact
+    return [t for t in sorted(use, key=lambda t: (-use[t], t)) if t != 0], use
 
 
 def build_tilesets(video, tiler):
-    """The 511 edge tiles and 256 gray tiles the whole video uses most."""
+    """The edge and gray tiles of the whole video, each most used first."""
     edge_counts, gray_counts = {}, {}
-    frames = 0
     for img in read_frames(video):
         for keys, counts in zip(tiler.keys(img), (edge_counts, gray_counts)):
             k, n = np.unique(keys, return_counts=True)
             for key, c in zip(k.tolist(), n.tolist()):
                 counts[key] = counts.get(key, 0) + c
-        frames += 1
-    edge = rank(edge_counts, tiler.edge_tile, SETS)
-    gray = rank(gray_counts, tiler.gray_tile, 256)
-    return edge, gray, frames
+    return rank(edge_counts, tiler.edge_tile), rank(gray_counts, tiler.gray_tile)
+
+
+def coverage(kept, use):
+    return sum(use.get(int(t), 0) for t in set(int(t) for t in kept)) / sum(use.values())
 
 
 class Matcher:
@@ -343,10 +342,10 @@ def main():
                     "whole video, OUT/badapple.tar.xz for part of it)")
     ap.add_argument("--start", type=float, default=0.0, help="first second to encode")
     ap.add_argument("--seconds", type=float, help="seconds to encode (default: to the end)")
-    ap.add_argument("--gray-lo", type=int, default=32, help="lowest real gray, of 255")
+    ap.add_argument("--gray-lo", type=int, default=31, help="lowest real gray, of 255")
     ap.add_argument("--gray-hi", type=int, default=254, help="highest real gray, of 255")
-    ap.add_argument("--opening", type=int, default=7, help="source pixels of gray band dropped as antialiasing")
-    ap.add_argument("--edge", type=int, default=118, help="the hard edge's gray, of 255")
+    ap.add_argument("--opening", type=int, default=12, help="source pixels of gray band dropped as antialiasing")
+    ap.add_argument("--edge", type=int, default=127, help="the hard edge's gray, of 255")
     ap.add_argument("--edge-snap", type=int, default=7, choices=range(1, 9), help="edge crossings per tile edge")
     ap.add_argument("--gray-snap", type=int, default=7, choices=range(1, 9), help="gray crossings per tile edge")
     ap.add_argument("--border-weight", type=int, default=4, help="weight of a border pixel when matching")
@@ -360,23 +359,38 @@ def main():
     tiler = Tiler(args.gray_lo / 255, args.gray_hi / 255, args.opening, args.edge / 255,
                   args.edge_snap, args.gray_snap)
     cache = os.path.join(args.out, "tileset.npz")
-    params = np.array([3, args.gray_lo, args.gray_hi, args.opening, args.edge, args.edge_snap, args.gray_snap])
+    params = np.array([4, args.gray_lo, args.gray_hi, args.opening, args.edge, args.edge_snap, args.gray_snap])
     t0 = time.time()
     if os.path.exists(cache) and np.array_equal(np.load(cache)["params"], params):
-        kept_edge, kept_gray = np.load(cache)["edge"], np.load(cache)["gray"]
+        z = np.load(cache, allow_pickle=True)
+        edge_ranked, gray_ranked = z["edge"].tolist(), z["gray"].tolist()
+        edge_use, gray_use = z["edge_use"].item(), z["gray_use"].item()
         print(f"Tile sets from {cache}")
         set_seconds = None
     else:
-        (kept_edge, edge_distinct, edge_exact), (kept_gray, gray_distinct, gray_exact), frames = \
-            build_tilesets(args.video, tiler)
-        np.savez(cache, params=params, edge=kept_edge, gray=kept_gray)
+        (edge_ranked, edge_use), (gray_ranked, gray_use) = build_tilesets(args.video, tiler)
+        np.savez(cache, params=params, edge=np.array(edge_ranked, np.uint64), gray=np.array(gray_ranked, np.uint64),
+                 edge_use=np.array(edge_use, object), gray_use=np.array(gray_use, object))
         set_seconds = time.time() - t0
-        print(f"Edge tiles: {edge_distinct} distinct in {frames} frames; the {len(kept_edge)} kept "
-              f"cover {100 * edge_exact:.2f}% of cells")
-        print(f"Gray tiles: {gray_distinct} distinct; the {len(kept_gray)} kept "
-              f"cover {100 * gray_exact:.2f}% of cells ({set_seconds:.0f} s)")
-    match_edge = Matcher(kept_edge, args.border_weight)
+
+    # Planes 1 and 2 hold the 510 edge tiles used most, after the empty tile
+    # 0. Plane 0 holds the 255 gray tiles used most, after the black tile 0.
+    # Spare slots on planes 1 and 2 take the next gray tiles: a checkerboard
+    # tile looks the same there, over plane 0's tile 0, in a cell with no edge.
+    kept_edge = [0] + edge_ranked[:SETS - 1]
+    kept_gray = [0] + gray_ranked[:255]
+    overflow = gray_ranked[255:255 + SETS - len(kept_edge)]
+    first_overflow = len(kept_edge)
+    slots = np.array(kept_edge + overflow + [0] * (SETS - len(kept_edge) - len(overflow)), np.uint64)
+    kept_gray = np.array(kept_gray + [0] * (256 - len(kept_gray)), np.uint64)
+    gray_all = np.concatenate([kept_gray, np.array(overflow, np.uint64)])
+    print(f"Edge tiles: {len(edge_ranked) + 1} distinct; {len(kept_edge)} kept cover "
+          f"{100 * coverage(kept_edge, edge_use):.2f}% of cells")
+    print(f"Gray tiles: {len(gray_ranked) + 1} distinct; 256 on plane 0 and {len(overflow)} in spare edge slots "
+          f"cover {100 * coverage(gray_all, gray_use):.2f}% of cells")
+    match_edge = Matcher(np.array(kept_edge, np.uint64), args.border_weight)
     match_gray = Matcher(kept_gray, args.border_weight)
+    match_gray_all = Matcher(gray_all, args.border_weight)
 
     with open(os.path.join(args.out, "tiles.bin"), "wb") as f:
         for tile in kept_gray:
@@ -384,7 +398,7 @@ def main():
         for layer in range(2):
             for tid in range(256):
                 index = tid if layer == 0 else (0 if tid == 0 else tid + 255)
-                f.write(tile_rows(kept_edge[index]))
+                f.write(tile_rows(slots[index]))
 
     first = round(args.start * FPS)
     count = round(args.seconds * FPS) if args.seconds else None
@@ -397,9 +411,15 @@ def main():
         frame = np.empty(MAP_BYTES, np.uint64)
         for cell, (ek, gk) in enumerate(zip(edge_keys.tolist(), gray_keys.tolist())):
             et, gt = tiler.edge_tile(ek), tiler.gray_tile(gk)
-            i, g = match_edge(et), match_gray(gt)
-            stand_in_cells += int(kept_edge[i] != et) + int(kept_gray[g] != gt)
-            frame[cell] = kept_edge[i] | kept_gray[g]
+            i = match_edge(et)
+            if i == 0:
+                g = match_gray_all(gt)
+                if g >= 256:
+                    i, g = first_overflow + g - 256, 0
+            else:
+                g = match_gray(gt)
+            stand_in_cells += int(int(slots[i]) | int(kept_gray[g]) != int(et) | int(gt))
+            frame[cell] = slots[i] | kept_gray[g]
             gray_map[cell] = g
             edge1[cell], edge2[cell] = layer_of(i)
         shown.append(frame)
@@ -431,7 +451,7 @@ def main():
 
     print(f"Encoded {count} frames from frame {first} ({first / FPS:.2f} s) in {encode_seconds:.1f} s; "
           f"{stand_in_cells} of {count * MAP_BYTES} cells use a stand-in tile; "
-          f"{len(match_edge.stand_ins)} + {len(match_gray.stand_ins)} distinct stand-ins")
+          f"{len(match_edge.stand_ins) + len(match_gray.stand_ins) + len(match_gray_all.stand_ins)} distinct stand-ins")
     print(f"Wrote tiles.bin and frames.bin ({16 + count * RECORD_BYTES:,} bytes) to {args.out}")
     write_archive(args.archive, args.out, ["tiles.bin", "frames.bin"])
     print(f"Wrote {args.archive} ({os.path.getsize(args.archive):,} bytes)")
