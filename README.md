@@ -11,9 +11,9 @@ stops, and so does the web player below until that release.
 <!-- rp6502
 preset: llvm-mos/Release
 publish: badapple.zip
-frames: 716
+frames: 538
 -->
-[![Bad Apple!!, frame 357](https://rumbledethumps.github.io/badapple/badapple/screenshot.png)](https://rumbledethumps.github.io/badapple/badapple/)
+[![Bad Apple!!, frame 268](https://rumbledethumps.github.io/badapple/badapple/screenshot.png)](https://rumbledethumps.github.io/badapple/badapple/)
 
 [Play it in your browser](https://rumbledethumps.github.io/badapple/badapple/).
 
