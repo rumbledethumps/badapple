@@ -663,9 +663,7 @@ margin.
 ### The bar
 
 - **Sprites** on plane 2's sprite layer, over the video: mode 5 custom
-  sprites, 4-bit color, most of them pixel-doubled (`MODE5_HDOUBLE`,
-  `MODE5_VDOUBLE`) so the art is drawn at 320x240 and costs a quarter of
-  the memory.
+  sprites, 4-bit color, at full resolution, with smooth edges.
 - **Parts:** the bar's background, the track, the progress fill, the
   playhead, buttons for back 10 s, play or pause, forward 10 s, and
   repeat, a time readout (1:23 / 3:39) from digit sprites, a volume icon
@@ -678,8 +676,9 @@ margin.
   from an ordered-dither pattern as well as its color, and the palette
   has an entry for each color and rank. Fading out turns the ranks
   transparent one at a time, so the bar dissolves in a few steps, over
-  about half a second. With 4-bit color: 3 colors and 5 ranks, or 5
-  colors and 3 ranks, plus transparent.
+  about half a second. With 4-bit color, each part's palette holds 3
+  tones, its gel, the charcoal, and one between them for the smooth
+  edges, in 5 ranks, plus transparent.
 - **Colors:** pastels on the black and white, like light through colored
   paper.
 
@@ -699,8 +698,8 @@ track is a thin charcoal-edged line between them.
   D4C7EB, and charcoal 3D3A42. Each disc has its own palette, its gel and
   the charcoal, so a 4-bit palette holds its colors at full dissolve
   steps.
-- **XRAM:** about 1.5 KB: six 16x16 discs, track and fill pieces that
-  repeat, the digits, and the pointer.
+- **XRAM:** about 4 KB at full resolution: five 32x32 discs, track and
+  fill pieces that repeat, the digits, and the pointer.
 - **The pointer** is charcoal with a butter fill.
 
 ### Fading
@@ -774,17 +773,21 @@ over it. A paused video shows its frame, not the title.
   Space play · ← → 10 seconds · ↑ ↓ volume · M mute · R repeat
 ```
 
-- **Type:** Shippori Mincho, from four studies, rendered at 1 bit per
-  pixel by the encoder.
-- **Colors:** one pastel per plane on black: white for the names and the
-  Picocomputer line (plane 0), butter for the title and the prompt
-  (plane 1), lilac for the headings, roles, and keys (plane 2).
-- **Layout:** laid out for the transport, which always shows, with clear
-  space above it, and the roles in a column clear of the longest name.
-- **Tiles:** one frame of maps with a tile set of its own, built by the
-  encoder, a third ROM asset. While the title shows, its maps are in a
-  map buffer and its tiles in the tile area. Starting the video reloads
-  the video's 6 KB of tiles from the ROM, a few milliseconds.
+- **Type:** Shippori Mincho, from four studies, antialiased, at full
+  resolution; Greek in Noto Serif, which Mincho lacks. `src/title.py`
+  renders it.
+- **Colors:** 4-bit tiles on plane 0: black, and white, butter, and lilac
+  in five steps each from black, blended in linear light. White for the
+  names, the Picocomputer line, and the keys; butter for the title, feat.
+  nomico, and the prompt; lilac for the headings and roles.
+- **Layout:** the text stops at line 396, above the transport, which
+  always shows; the roles sit in a column clear of the longest name.
+- **Tiles:** about 800 distinct tiles, so plane 0 runs in four bands of
+  scanlines, each a mode 2 layer with 256 tiles of its own, all reading
+  one map. 32 KB of tiles and the 4,800-byte map, `title.bin`, a ROM
+  asset, read into the video's map buffers and ring, which the title does
+  not use. Planes 1 and 2 are moved off the canvas. Starting the video
+  reloads the video's tiles from the ROM and sets the three planes back.
 
 ### The web player
 
