@@ -616,4 +616,147 @@ meant for them and for an index asset of frame positions.
 - Late frames over the whole video, counted with a temporary probe: none
   at 8 MHz, none at 4 MHz, 19 at 3 MHz, 5,053 at 2 MHz. The decoder has
   at least twice the CPU it needs.
-- A 10-second ROM played cleanly on an RP6502-PICO.
+- A 10-second ROM played cleanly on an RP6502-PICO, and then the whole
+  video did.
+
+## Step 6: transport
+
+A transport bar over the video: play and pause, back and forward 10
+seconds, scrubbing, repeat, and volume, driven by the tablet interface
+(mouse, pen, or touch) and by a gamepad. It fades out after a few seconds
+without input, and comes back on any movement or button.
+
+### Seeking: keyframes and an index
+
+Every frame is a delta against the frame two before it, so playback can
+only start where both map buffers are known. Today that is only frame 0.
+
+- **Keyframes.** At the start of every second, frames 30n and 30n+1 are
+  coded against cleared maps, and their delta blocks carry a flag. Before
+  applying a flagged block, the player clears that map buffer, 14,400
+  bytes, in assembly, about 8 ms. In plain playback that happens twice a
+  second. Measured on the current encoding, keyframe blocks average 2,724
+  bytes, 5,375 at most, and add 0.71 MB to the 34.4 MB stream.
+- **The index,** a second ROM asset, `ROM:index`: for each second, the
+  file offset of its keyframe (4 bytes) and the length of its delta block
+  (2 bytes). 220 seconds make 1.3 KB, loaded into 6502 RAM at start, so a
+  seek costs no read of its own.
+- **A seek:** empty the PCM device (`lseek` with `SEEK_SET`), `lseek` the
+  stream to the keyframe, refill the ring, decode the keyframe pair, and
+  go on. About 40 ms, so scrubbing can show 20 or more seconds a second.
+- **Scrubbing** shows the keyframe of each second the playhead crosses,
+  with no sound, and plays from the second it is let go at.
+
+### Volume
+
+The docs give the PCM device no volume control, so the 6502 scales the
+sound in the ring before it is sent. A second assembly routine reads each 16-bit
+sample through portal 1, looks up `hi * v` (16 bits) and `lo * v / 256` in
+tables in 6502 RAM, 768 bytes rebuilt when the volume changes, and writes
+the sum back through portal 0 in place. About 35 cycles a sample, 72,000
+a frame, 27% of the 6502. It runs in steps of about 256 bytes, like the
+decoder, and PCM writes never pass the scaled part. At full volume it is
+skipped. Sixteen steps; the decoder's worst frames use under half the
+6502, so the two fit, and the emulator at lower clock speeds will show the
+margin.
+
+### The bar
+
+- **Sprites** on plane 2's sprite layer, over the video: mode 5 custom
+  sprites, 4-bit color, most of them pixel-doubled (`MODE5_HDOUBLE`,
+  `MODE5_VDOUBLE`) so the art is drawn at 320x240 and costs a quarter of
+  the memory.
+- **Parts:** the bar's background, the track, the progress fill, the
+  playhead, buttons for back 10 s, play or pause, forward 10 s, and
+  repeat, a time readout (1:23 / 3:39) from digit sprites, a volume icon
+  and slider, and the pointer.
+- **XRAM:** under 10 KB of the 14 KB free, art and sprite array together.
+  The bar's scanlines cost about 400 of the VGA's 1,600 clocks at 640
+  wide.
+- **The fade** is done with the palettes. Alpha is one bit, so a color
+  cannot go half transparent. Instead each pixel of the art carries a rank
+  from an ordered-dither pattern as well as its color, and the palette
+  has an entry for each color and rank. Fading out turns the ranks
+  transparent one at a time, so the bar dissolves in a few steps, over
+  about half a second. With 4-bit color: 3 colors and 5 ranks, or 5
+  colors and 3 ranks, plus transparent.
+- **Colors:** pastels on the black and white, like light through colored
+  paper.
+
+### The design: gel discs
+
+Chosen from four studies. There is no bar behind the controls: each one is
+its own disc of pastel "stage gel" with a charcoal rim and icon, and the
+track is a thin charcoal-edged line between them.
+
+- **Discs, left to right:** back 10 s (sky), play or pause (butter),
+  forward 10 s (sky), then the track, then repeat (mint) and the speaker
+  (lilac), with a short volume slider after it.
+- **The track:** charcoal edge, lilac inside, peach where it has played,
+  and a peach playhead. The time rides above the playhead in a small
+  butter pill.
+- **Colors:** peach F4C6B4, butter F2E2A4, mint BCE2CF, sky BCD5ED, lilac
+  D4C7EB, and charcoal 3D3A42. Each disc has its own palette, its gel and
+  the charcoal, so a 4-bit palette holds its colors at full dissolve
+  steps.
+- **XRAM:** about 1.5 KB: six 16x16 discs, track and fill pieces that
+  repeat, the digits, and the pointer.
+- **The pointer** is charcoal with a butter fill.
+
+### Fading
+
+- The bar and the pointer dissolve out together, in the pixelated steps
+  of the palettes, after 3 seconds without input while playing.
+- They come back at once, with no dissolve in, so the pointer is under
+  control the moment it moves. The input that brings them back does
+  nothing else.
+- They stay while paused.
+
+### Controls
+
+| | Tablet (mouse, pen, touch) | Gamepad |
+|---|---|---|
+| Play, pause | the play button | A (south) |
+| Back, forward 10 s | the buttons | d-pad left, right |
+| Scrub | drag the playhead or click the track | hold a shoulder button, or the left stick |
+| Repeat | the repeat button | Y (north) |
+| Volume | drag the slider | d-pad up, down |
+| Mute | the speaker | X (west) |
+| Show the bar | move the pointer | any button, which then does nothing else |
+
+- The bar and pointer fade after 3 seconds without input while playing,
+  and stay while paused.
+- At start the player waits on frame 0, with the bar showing, for Play.
+  Repeat is off and the volume is full.
+- At the end, the video stops on its last frame with the bar showing,
+  and Play starts it again. With repeat on, it loops as now.
+- The speaker mutes and unmutes, and the slider sets the volume.
+
+### The web player
+
+The ROM has its own play button now, so the web player no longer needs
+one of its own. `rp6502_web()` in `CMakeLists.txt` drops `autoplay:
+'off'`, for the default `on`, and sets `overlay: false`: the ROM starts
+when the page loads and waits on frame 0 with its transport. The browser
+allows sound at the first click on the player, which is the click on
+Play. The README's screenshot, taken after 538 VSYNCs, will then show
+frame 0 with the transport, unless the screenshot moves elsewhere.
+
+### XRAM
+
+| | Bytes |
+|---|---|
+| Now: tiles, maps, ring | 51,388 |
+| Tablet and gamepad state | about 100 |
+| Transport art, palettes, sprite array | under 10,000 |
+| Free | about 4,000 or more |
+
+### Order of work
+
+1. Keyframes, the index, and seeking, tested with keys in the emulator's
+   script before there is a bar.
+2. Volume scaling, and the emulator at lower clock speeds for the CPU
+   margin.
+3. The bar's art and sprites, from the chosen design, and the fade.
+4. Tablet and gamepad input.
+5. A short sample on the hardware.
