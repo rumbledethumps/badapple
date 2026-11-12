@@ -7,10 +7,10 @@
 
 /* Plays ROM:frames, made by src/encode.py.
  *
- * It starts on the title screen, ROM:title, and waits. Any key starts the
- * video, and the transport's keys do what they say: Space plays and
- * pauses, the arrows go back and forward 10 seconds, R turns repeat on and
- * off. At the end the title screen comes back, or with repeat on, the
+ * It starts on the title screen, ROM:title, and waits. A click above the
+ * transport starts the video, and the transport's controls do what they
+ * say: Space plays and pauses, the arrows go back and forward 10 seconds,
+ * R turns repeat on and off. At the end the title screen comes back, or with repeat on, the
  * video plays again.
  *
  * The file streams into a 16 KB ring in XRAM, in reads of 4 to 8 KB. Each
@@ -148,7 +148,7 @@ enum
     ACT_MUTE,
     ACT_LOUDER,
     ACT_QUIETER,
-    ACT_START,    /* on the title screen only: a lazy start */
+    ACT_START,    /* a click above the transport, on the title screen only */
 };
 
 void copy_run(uint8_t count);     /* copy.s */
@@ -642,8 +642,7 @@ static bool key_down(const uint8_t *keys, uint8_t code)
     return KEYBOARD_PRESSED(keys, code) && !KEYBOARD_PRESSED(keys_last, code);
 }
 
-/* The keyboard: the action of the first key that went down, or on the
- * title screen, a start for any other key. */
+/* The keyboard: the action of the first key that went down. */
 static uint8_t keyboard(void)
 {
     static const uint8_t KEYS[][2] = {
@@ -659,9 +658,6 @@ static uint8_t keyboard(void)
     for (i = 0; i < sizeof(KEYS) / sizeof(KEYS[0]) && !action; i++)
         if (key_down(keys, KEYS[i][0]))
             action = KEYS[i][1];
-    /* KEYBOARD_NO_KEY is set while nothing is down. */
-    if (!action && !KEYBOARD_PRESSED(keys, KEYBOARD_NO_KEY) && KEYBOARD_PRESSED(keys_last, KEYBOARD_NO_KEY))
-        action = ACT_START;
     for (i = 0; i < sizeof(keys); i++)
         keys_last[i] = keys[i];
     return action;
@@ -705,10 +701,6 @@ static uint8_t gamepad(int *scrub)
         return ACT_MUTE;
     if (down[2] & GAMEPAD_BTN0_Y)
         return ACT_REPEAT;
-    if (down[2] & (GAMEPAD_BTN0_L1 | GAMEPAD_BTN0_R1) || down[1])
-        return ACT_NONE;
-    if (down[2] || down[3])
-        return ACT_START;
     return ACT_NONE;
 }
 

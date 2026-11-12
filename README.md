@@ -193,13 +193,14 @@ one between them, so its edges are smooth.
 | Volume | drag the slider | d-pad up, down | up, down arrows |
 | Mute | the speaker | X | M |
 
-On the title screen, a click above the transport, or any other key or
-button, starts the video. While the video plays, the transport and the
+On the title screen, a click or tap above the transport starts the
+video. While the video plays, the transport and the
 pointer dissolve after 3 seconds without input, or at once when the
 pointer leaves the canvas: each palette holds its tones in five ranks of
 an ordered dither, and the ranks turn clear one at a time. They come back
 at once on any input, which then does nothing else. The emulator and the
-web player draw their own pointer; elsewhere the transport draws one.
+web player draw their own pointer; elsewhere the transport draws one, a
+black and white desktop arrow.
 
 ### Memory
 

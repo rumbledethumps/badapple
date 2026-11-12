@@ -167,8 +167,8 @@ typedef struct
 #define RING_MASK (RING_BYTES - 1)
 #define TITLE_BANDS 4
 #define TITLE_TILE_BYTES 32 /* 8x8, 4 bits a pixel */
-#define TRANSPORT_PALETTES 6
-#define TRANSPORT_BYTES 6632 /* transport.bin: the palettes, then the images */
+#define TRANSPORT_PALETTES 7
+#define TRANSPORT_BYTES 6664 /* transport.bin: the palettes, then the images */
 #define SPRITES 25
 
 typedef struct

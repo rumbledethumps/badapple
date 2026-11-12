@@ -31,19 +31,21 @@ from PIL import Image, ImageDraw, ImageFont
 
 COLORS = {"peach": (0xF4, 0xC6, 0xB4), "butter": (0xF2, 0xE2, 0xA4), "mint": (0xBC, 0xE2, 0xCF),
           "sky": (0xBC, 0xD5, 0xED), "lilac": (0xD4, 0xC7, 0xEB), "stone": (0xD9, 0xD6, 0xDE),
-          "char": (0x3D, 0x3A, 0x42)}
+          "char": (0x3D, 0x3A, 0x42), "white": (0xFF, 0xFF, 0xFF), "black": (0x00, 0x00, 0x00)}
 RANKS = 5
 BAYER = np.array([[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]])
 
 # Each palette: its gel, then the charcoal. The middle tone is between them.
-PALETTES = ["sky", "butter", "mint", "stone", "lilac", "peach"]
+# The pointer's is white and black, like a desktop's.
+PALETTES = ["sky", "butter", "mint", "stone", "lilac", "peach", "white"]
 PAL = {name: i for i, name in enumerate(PALETTES)}
 
 K = 8  # drawn K times larger
 
 
 def tones(gel):
-    g, c = np.array(COLORS[gel], float), np.array(COLORS["char"], float)
+    g = np.array(COLORS[gel], float)
+    c = np.array(COLORS["black" if gel == "white" else "char"], float)
     return [g, (g + c) / 2, c]  # tone 0 gel, 1 middle, 2 charcoal
 
 
@@ -77,9 +79,11 @@ class Art:
 
     def pixels(self, solid=None):
         """4-bit indices: clear, or 1 + tone * RANKS + rank."""
+        # Pillow scales RGBA with its alpha premultiplied, and returns the
+        # colors straight, so they need no dividing by the alpha.
         small = np.array(self.im.resize((self.w, self.h), Image.BOX), float)
         alpha = small[..., 3] / 255
-        rgb = small[..., :3] / np.maximum(alpha[..., None], 1e-6)
+        rgb = small[..., :3]
         t = np.array(tones(self.gel))
         tone = np.argmin(((rgb[:, :, None, :] - t[None, None]) ** 2).sum(-1), axis=2)
         ys, xs = np.mgrid[0:self.h, 0:self.w]
@@ -174,13 +178,46 @@ def digit(ch, font):
     return a
 
 
+POINTER = [  # the desktop arrow: X black, o white
+    "X...........",
+    "XX..........",
+    "XoX.........",
+    "XooX........",
+    "XoooX.......",
+    "XooooX......",
+    "XoooooX.....",
+    "XooooooX....",
+    "XoooooooX...",
+    "XooooooooX..",
+    "XoooooooooX.",
+    "XooooooXXXXX",
+    "XoooXooX....",
+    "XooXXooX....",
+    "XoX..XooX...",
+    "XX...XooX...",
+    "X.....XooX..",
+    "......XooX..",
+    ".......XX...",
+    "............",
+]
+
+
+class Pixels:
+    """Pixel art, drawn as it is, with no smoothing."""
+
+    def __init__(self, rows, gel):
+        self.rows, self.gel = rows, gel
+        self.w, self.h = len(rows[0]), len(rows)
+
+    def pixels(self, solid=None):
+        ys, xs = np.mgrid[0:self.h, 0:self.w]
+        rank = BAYER[ys % 4, xs % 4] * RANKS // 16
+        tone = np.array([[{"o": 0, "X": 2}.get(ch, -1) for ch in row] for row in self.rows])
+        return np.where(tone >= 0, 1 + tone * RANKS + rank, 0)
+
+
 def pointer():
-    a = Art(12, 20, "butter")
-    pts = [(1, 1), (1, 16), (4.5, 12.5), (7, 18), (9.5, 17), (7, 11.5), (11.5, 11.5)]
-    a.poly(pts, "char")
-    inner = [(2.6, 4.6), (2.6, 13), (5, 10.6), (7.6, 16.2), (8, 16), (5.6, 10.2), (8.4, 10.2)]
-    a.poly(inner, "butter")
-    return a
+    return Pixels(POINTER, "white")
 
 
 def images(fonts):
@@ -208,7 +245,7 @@ def images(fonts):
     out += [
         ("volume track", vt, "lilac", None),
         ("volume fill", solid(48, 4, "mint"), "mint", 2),
-        ("pointer", pointer(), "butter", None),
+        ("pointer", pointer(), "white", None),
     ]
     return out
 

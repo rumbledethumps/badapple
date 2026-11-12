@@ -748,8 +748,8 @@ video returns when it ends with repeat off; always with the transport
 over it. A paused video shows its frame, not the title.
 
 - **A lazy start.** On the title, a click or tap anywhere above the
-  transport starts the video, and so does a key or gamepad button that
-  has no transport action. Someone on a touchscreen can tap the middle.
+  transport starts the video. Someone on a touchscreen can tap the
+  middle. Keys and buttons only do their transport actions.
 - **Transport actions do what they say.** A click on the transport, or a
   mapped key or button, acts as it would during the video: forward 10 s,
   for one, leaves the title and pauses at 0:10.
@@ -758,7 +758,6 @@ over it. A paused video shows its frame, not the title.
 
 ```
                     Bad Apple!!
-                   feat. nomico
               for the Picocomputer 6502
 
   MUSIC   ZUN                  composer, "Bad Apple!!", 1998
@@ -769,8 +768,8 @@ over it. A paused video shows its frame, not the title.
   VIDEO   Μμ                   storyboard, 2008
           Anira and team       shadow-art animation, 2009
 
-        Press play, click, or press any key
-  Space play · ← → 10 seconds · ↑ ↓ volume · M mute · R repeat
+           Click or press Space to play
+  Space play · ◀▶ 10 seconds · ▲▼ volume · M mute · R repeat
 ```
 
 - **Type:** Shippori Mincho, from four studies, antialiased, at full
@@ -822,8 +821,8 @@ starts the video. The README's screenshot then shows the title screen.
 - The encoder writes keyframes, `index.bin`, `title.bin`, and
   `transport.bin`. Keyframes add 0.7 MB; `frames.bin` is 35.1 MB.
 - In the emulator, with the keyboard, the tablet, and a gamepad driven by
-  its script: the title screen, a lazy start from a click, a key, or a
-  button, play and pause, 10-second skips, a click on the track, the
+  its script: the title screen, a lazy start from a click, play and
+  pause, 10-second skips, a click on the track, the
   volume slider, repeat, mute, the end back to the title or, with repeat
   on, a second pass, the dissolve after 3 seconds, the pointer leaving the
   canvas, and the transport coming back at once.
@@ -832,3 +831,16 @@ starts the video. The README's screenshot then shows the title screen.
 - Late frames over the whole video, volume lowered, transport drawn: none
   at 8 MHz, 3 at 6 MHz. Drawing only what changed in the transport, and
   unrolling the scaler by four, bought that margin.
+
+### Adjustments
+
+- The title drops "feat. nomico", who is credited under MUSIC; it reads
+  "Bad Apple!!", then "for the Picocomputer 6502".
+- The keys line draws its arrows as solid triangles; Mincho's arrows were
+  hairlines. The prompt reads "Click or press Space to play".
+- The discs had light pixels outside their charcoal rims, which sparkled
+  on black: Pillow scales RGBA with the alpha premultiplied and returns
+  straight colors, which `src/transport.py` divided by the alpha again.
+- The pointer the transport draws is a black and white desktop arrow.
+- Only a click or tap above the transport starts the video from the title
+  screen; keys and buttons do only their transport actions.

@@ -36,6 +36,7 @@ enum
     PAL_STONE,
     PAL_LILAC,
     PAL_PEACH,
+    PAL_WHITE,
 };
 
 static const struct
@@ -49,7 +50,7 @@ static const struct
     {8, 12, PAL_BUTTER}, {8, 12, PAL_BUTTER}, {8, 12, PAL_BUTTER}, {8, 12, PAL_BUTTER},
     {8, 12, PAL_BUTTER}, {8, 12, PAL_BUTTER}, {8, 12, PAL_BUTTER}, {8, 12, PAL_BUTTER},
     {8, 12, PAL_BUTTER}, {8, 12, PAL_BUTTER}, {8, 12, PAL_BUTTER},
-    {48, 8, PAL_LILAC}, {48, 4, PAL_MINT}, {12, 20, PAL_BUTTER},
+    {48, 8, PAL_LILAC}, {48, 4, PAL_MINT}, {12, 20, PAL_WHITE},
 };
 
 /* The sprites, in drawing order: later ones cover earlier ones. */

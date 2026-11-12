@@ -48,7 +48,11 @@ CREDITS = [
                ("nomico", "vocals"), ("Haruka", "lyrics")]),
     ("VIDEO", [("Μμ", "storyboard, 2008"), ("Anira and team", "shadow-art animation, 2009")]),
 ]
-KEYS = "Space play  ·  ← → 10 seconds  ·  ↑ ↓ volume  ·  M mute  ·  R repeat"
+# The keys, with arrows drawn as solid triangles: Mincho's arrows are thin
+# hairlines at this size.
+KEYS = ["Space play", "  ·  ", "<", ">", " 10 seconds", "  ·  ", "^", "v", " volume", "  ·  ",
+        "M mute", "  ·  ", "R repeat"]
+ARROW = 11  # each triangle's width and height
 
 
 class Screen:
@@ -79,14 +83,32 @@ class Screen:
     def center(self, plane, font, text, y):
         self.text(plane, font, text, round((W - self.width(font, text)) / 2), y)
 
+    def keys(self, plane, font, parts, y):
+        """A line of text and arrows, centered; an arrow sits on the
+        middle of the lowercase letters."""
+        arrows = {"<", ">", "^", "v"}
+        widths = [ARROW + 5 if p in arrows else self.width(font, p) for p in parts]
+        x = (W - sum(widths)) / 2
+        mid = y - 5
+        for p, w in zip(parts, widths):
+            if p in arrows:
+                a, h = x, ARROW / 2
+                tri = {"<": [(a, mid), (a + ARROW, mid - h), (a + ARROW, mid + h)],
+                       ">": [(a + ARROW, mid), (a, mid - h), (a, mid + h)],
+                       "^": [(a + h, mid - h), (a, mid + h), (a + ARROW, mid + h)],
+                       "v": [(a + h, mid + h), (a, mid - h), (a + ARROW, mid - h)]}[p]
+                self.draws[plane].polygon(tri, fill=255)
+            else:
+                self.text(plane, font, p, round(x), y)
+            x += w
+
     def coverage(self):
         return np.stack([np.array(im, np.float64) / 255 for im in self.layers])
 
 
 def layout(s):
-    s.center(BUTTER, "title", "Bad Apple!!", 78)
-    s.center(BUTTER, "sub", "feat. nomico", 106)
-    s.center(WHITE, "small", "for the Picocomputer 6502", 132)
+    s.center(BUTTER, "title", "Bad Apple!!", 84)
+    s.center(WHITE, "small", "for the Picocomputer 6502", 118)
 
     # Three columns, centered as a block: heading, name, role.
     gap = 28
@@ -104,8 +126,8 @@ def layout(s):
             y += 24
         y += 14
 
-    s.center(BUTTER, "sub", "Press play, click, or press any key", 352)
-    s.center(WHITE, "small", KEYS, 380)
+    s.center(BUTTER, "sub", "Click or press Space to play", 352)
+    s.keys(WHITE, "small", KEYS, 380)
 
 
 def to_linear(c):
@@ -217,6 +239,7 @@ def build(out, fonts):
     assert not cov[:, TEXT_BOTTOM:].any(), "text runs into the transport"
     idx = indexed(cov)
     bands, sets, tmap = tiles_and_map(idx)
+    assert len(bands) <= 4, f"{len(bands)} bands; the player has room for 4"
     rgb = palette()
     with open(os.path.join(out, "title.bin"), "wb") as f:
         f.write(b"TTL1" + bytes([len(bands)] + bands) + bytes(16 - 5 - len(bands)))
