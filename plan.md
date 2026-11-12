@@ -744,9 +744,18 @@ track is a thin charcoal-edged line between them.
 
 ### The title screen
 
-Shown before the video and after it ends when repeat is off, always with
-the transport over it. While it shows, any click, button, or key starts
-the video. Once the video plays, only the transport's own controls act.
+Shown at the very start, paused before frame 0, which is also where the
+video returns when it ends with repeat off; always with the transport
+over it. A paused video shows its frame, not the title.
+
+- **A lazy start.** On the title, a click or tap anywhere above the
+  transport starts the video, and so does a key or gamepad button that
+  has no transport action. Someone on a touchscreen can tap the middle.
+- **Transport actions do what they say.** A click on the transport, or a
+  mapped key or button, acts as it would during the video: forward 10 s,
+  for one, leaves the title and pauses at 0:10.
+- **The end.** The source already ends with 58 black frames, 1.9 s, so
+  the title comes back after a natural pause, with nothing added.
 
 ```
                     Bad Apple!!
