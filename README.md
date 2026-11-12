@@ -4,9 +4,9 @@ The Bad Apple!! shadow-art video on the
 [Picocomputer 6502](https://picocomputer.github.io/), all 6573 frames at
 30 fps, as 640x480 black-and-white tiles.
 
-The soundtrack plays through the PCM audio device of the RP6502 release
-after 0.42. On older versions the player prints `No PCM device found.` and
-stops, and so does the web player below until that release.
+The soundtrack plays through the PCM audio device of RP6502 0.43 and
+later. On older versions the player prints `No PCM device found.` and
+stops.
 
 <!-- rp6502
 preset: llvm-mos/Release
@@ -218,9 +218,10 @@ files, as [Local Files](https://picocomputer.github.io/sdk.html) in the SDK
 describes, for example in a `CMakeUserPresets.json`, which Git ignores.
 
 On each push to `main`, `.github/workflows/web.yml` builds the ROM and
-publishes the web player at the top of this page to GitHub Pages. Its
-picture is the player's screen after 716 VSYNCs: frame 357 once the
-release with PCM audio is out, and `No PCM device found.` until then.
+publishes the web player at the top of this page to GitHub Pages. The
+player starts at the first click on it, with `autoplay: 'off'`, so the
+song plays from the beginning. Its picture is the player's screen after
+538 VSYNCs, frame 268.
 
 ## Updating the tools
 
