@@ -849,3 +849,6 @@ starts the video. The README's screenshot then shows the title screen.
 - The volume steps are even in level, as a web video player's are, so
   the middle of the slider is -6 dB. In steps of 3 dB the middle was
   -18 dB, which sounded far too quiet.
+- Two arguments: `play` starts the video at once, without the title
+  screen, and `repeat` turns repeat on. Anything else prints the two and
+  stops.

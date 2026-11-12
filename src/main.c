@@ -920,11 +920,44 @@ static bool read_index(void)
     return true;
 }
 
-int main(void)
+/* The arguments: "play" starts the video at once, without the title
+ * screen, and "repeat" turns repeat on. The C runtime asks here for room
+ * for them; more than ARGV_BYTES is turned away, and main() gets none. */
+#define ARGV_BYTES 64
+void *__argv_mem(size_t size)
+{
+    static char argv_data[ARGV_BYTES];
+    return size <= ARGV_BYTES ? argv_data : NULL;
+}
+
+static bool is_arg(const char *arg, const char *word)
+{
+    for (; *word; arg++, word++)
+        if ((*arg | 0x20) != *word)
+            return false;
+    return !*arg;
+}
+
+int main(int argc, char *argv[])
 {
     uint8_t header[HEADER_BYTES];
     mode2_config_t config;
     uint8_t layer;
+    bool play = false;
+    int a;
+
+    for (a = 1; a < argc; a++)
+    {
+        if (is_arg(argv[a], "play"))
+            play = true;
+        else if (is_arg(argv[a], "repeat"))
+            repeat = true;
+        else
+        {
+            printf("Unknown argument: %s. Arguments: play, repeat.\n", argv[a]);
+            return 1;
+        }
+    }
 
     pcm_fd = open("PCM:30810,16,2", O_WRONLY);
     if (pcm_fd < 0)
@@ -975,6 +1008,8 @@ int main(void)
         puts("ROM:title is missing.");
         return 1;
     }
+    if (play && !start_at(0, SHOW_PLAY))
+        return 1;
     vsync = ria_vsync();
     while (1)
     {

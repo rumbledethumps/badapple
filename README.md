@@ -287,6 +287,12 @@ the other options.
 - **Emulator.** In VS Code, press F5 with the RP6502-EMU launch
   configuration, or run
   `build/llvm-mos/release/badapple/rp6502-emu build/llvm-mos/release/badapple/badapple.rp6502`.
+- **Arguments.** `play` starts the video at once, without the title
+  screen, and `repeat` turns repeat on, so `play repeat` loops the video
+  with no input. In VS Code they go in `args` of the RP6502-EMU launch
+  configuration; for the emulator, after `--`:
+  `rp6502-emu badapple.rp6502 -- play repeat`; for the web player, in
+  `args` of `rp6502_web()` in `CMakeLists.txt`.
 - **Web player.** The build also writes the web player to
   `build/llvm-mos/release/web/badapple/`, with the 35 MB ROM. The
   RP6502-WEB launch configuration serves it and opens it in a browser.
