@@ -5,8 +5,8 @@
 #include "xram.h"
 
 /* Plays ROM:frames, made by src/encode.py, in a loop. Each frame is a
- * record of its three maps and its sound. Three buffers in
- * XRAM hold the frame on screen and up to two frames loaded ahead of it. A
+ * record of its three maps and its sound. Two buffers in XRAM hold the
+ * frame on screen and the next frame, loading or loaded. A
  * frame is shown by pointing all three layers at its maps, at a VSYNC, so it
  * doesn't tear. A 30 fps frame lasts two 60 Hz VSYNCs. A frame that isn't
  * loaded by its VSYNC is shown at the next one. The sound goes from the
@@ -22,8 +22,7 @@
 
 #define HEADER_BYTES 16
 #define VSYNCS_PER_FRAME 2
-#define BUFFERS 3
-#define AHEAD 2 /* frames loaded ahead of the one on screen */
+#define AHEAD (BUFFERS - 1) /* frames loaded ahead of the one on screen */
 #define READ_BYTES (RECORD_BYTES / 2)
 
 #define FRAMES_PATH "ROM:frames"
@@ -110,7 +109,7 @@ static void finish_call(void)
     call = CALL_NONE;
 }
 
-/* Fills the PCM device, then reads half a record, up to two frames ahead,
+/* Fills the PCM device, then reads half a record into the next buffer,
  * once the buffer's last sound has all gone to the device. */
 static void start_next_call(void)
 {

@@ -104,9 +104,9 @@ one comes out as encoded. It also writes `preview.mp4` in
 
 - **PCM first.** The player opens `PCM:30810,16,2` before anything else.
   When it cannot, it prints `No PCM device found.` and stops.
-- **Triple buffering.** XRAM holds three records. One is on screen, and
-  `read_xram()` loads up to two frames ahead of it, straight from the ROM,
-  so one slow read does not hold up the picture.
+- **Double buffering.** XRAM holds two records. One is on screen, and
+  `read_xram()` loads the next frame into the other, straight from the
+  ROM.
 - **VSYNC.** A frame is shown by pointing all three planes at its maps. The
   display runs at 60 Hz, so a frame lasts two VSYNCs. The player keeps the
   last VSYNC count in a static, and at every second change it shows the
@@ -132,9 +132,9 @@ one comes out as encoded. It also writes `preview.mp4` in
   way.
 
 Measured on an RP6502-PICO, reading 18,508-byte records from its USB
-drive: reads ran at 1,018 kB/s and took 55% of the time. At 149 of 150
-frame changes, both spare buffers were loaded, at the other one, and never
-none. The PCM device never fell below about 1,860 bytes, 15 ms of sound.
+drive: reads ran at 1,018 kB/s and took 55% of the time, so a frame loads
+in about 18 ms of its 33. The PCM device never fell below about 1,860
+bytes, 15 ms of sound.
 
 ## The audio
 

@@ -62,6 +62,7 @@ typedef struct
 #define FRAME_BYTES (LAYERS * MAP_BYTES)
 #define SOUND_BYTES 4108
 #define RECORD_BYTES (FRAME_BYTES + SOUND_BYTES)
+#define BUFFERS 2
 
 typedef struct
 {
@@ -74,7 +75,7 @@ typedef struct
     uint8_t tiles[LAYERS][256][8];  /* [layer], loaded from tiles.bin */
     mode2_config_t config[LAYERS];  /* [layer] */
     uint16_t palette[LAYERS][2];    /* [layer][color] */
-    record_t records[3];       /* [buffer] */
+    record_t records[BUFFERS];       /* [buffer] */
 } xram_layout_t;
 
 #define XRAM_TILES offsetof(xram_layout_t, tiles)
