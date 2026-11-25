@@ -65,10 +65,13 @@ enum
 
 static int frames_fd, pcm_fd;
 static unsigned frames, seconds;
+static int seek_fd;
 static struct
 {
-    uint32_t offset; /* the file position of the second's first frame */
-    unsigned block;  /* the length of its delta block */
+    uint32_t offset;      /* the file position of the second's first frame */
+    unsigned block;       /* the length of its block */
+    uint32_t seek_offset; /* the position of its record in ROM:seek */
+    unsigned seek_len;    /* the record's length */
 } second_at[MAX_SECONDS];
 
 static uint8_t show_state;
@@ -188,14 +191,14 @@ static uint8_t ring_get(void)
 /* The oldest byte in the ring still needed: unsent sound, or undecoded. */
 static unsigned ring_tail(void)
 {
-    return sound_len[sound_play] ? sound_at[sound_play] + sound_sent : parse;
+    /* A frame's sound is released when its decoding starts, so unsent
+     * sound can lie after parse: the tail is the older of the two. */
+    unsigned at = sound_at[sound_play] + sound_sent;
+    return sound_len[sound_play] && (unsigned)(parse - at) < 0x8000 ? at : parse;
 }
 
 static void finish_frame(void)
 {
-    sound_at[load] = parse;
-    sound_len[load] = SOUND_BYTES;
-    sound_ready[load] = scaling ? 0 : SOUND_BYTES;
     parse += SOUND_BYTES;
     block = next_block;
     load = after(load);
@@ -217,6 +220,12 @@ static void decode_step(void)
         if (ahead >= AHEAD || next + ahead >= frames || sound_len[load] ||
             (unsigned)(head - parse) < block + SOUND_BYTES)
             return;
+        /* The block and the sound are both in the ring, so the sound can go
+         * to the PCM device while the block is applied: a large block,
+         * like a keyframe's, would otherwise leave the device to run dry. */
+        sound_at[load] = parse + block;
+        sound_len[load] = SOUND_BYTES;
+        sound_ready[load] = scaling ? 0 : SOUND_BYTES;
         lo = ring_get();
         hi = ring_get();
         next_block = lo | hi << 8;
@@ -430,6 +439,40 @@ static void video_planes(void)
     }
 }
 
+/* Puts XRAM in the state the stream expects at the start of a second, from
+ * its record in ROM:seek: every tile slot and both map buffers. The record
+ * clears both buffers, then comes in parts of up to 8 KB, each read into the
+ * ring and its writes applied. */
+static bool seek_state(unsigned second)
+{
+    uint8_t flags, len_bytes[2];
+    unsigned i, len;
+    if (lseek(seek_fd, second_at[second].seek_offset, SEEK_SET) < 0 || read(seek_fd, &flags, 1) != 1)
+        return false;
+    if (flags & 1)
+    {
+        RIA.step0 = 1;
+        RIA.addr0 = XRAM_MAPS;
+        for (i = 0; i < BUFFERS * FRAME_BYTES / 8 / 120; i++)
+            clear_groups(120);
+    }
+    while (1)
+    {
+        if (read(seek_fd, len_bytes, 2) != 2)
+            return false;
+        len = len_bytes[0] | len_bytes[1] << 8;
+        if (!len)
+            return true;
+        if (read_xram(XRAM_RING, len, seek_fd) != (int)len)
+            return false;
+        RIA.step0 = 1;
+        RIA.step1 = 1;
+        RIA.addr1 = XRAM_RING;
+        while (decode_runs() == 0)
+            ;
+    }
+}
+
 /* Starts the video at the start of a second, playing or paused there:
  * empties the PCM device, fills the ring from that second's place in the
  * file, and decodes its first frame, a keyframe, then shows it at a
@@ -444,7 +487,7 @@ static bool start_at(unsigned second, uint8_t state)
         for (band = 0; band < TITLE_BANDS; band++)
             xram0_poke16(XRAM_TITLE_CONFIG + band * sizeof(mode2_config_t) + offsetof(mode2_config_t, y_pos_px),
                          480);
-    if (lseek(frames_fd, second_at[second].offset, SEEK_SET) < 0)
+    if (!seek_state(second) || lseek(frames_fd, second_at[second].offset, SEEK_SET) < 0)
         return false;
     head = parse = 0;
     stream_end = false;
@@ -898,20 +941,27 @@ static bool inputs(void)
     return ok;
 }
 
+static uint32_t le32(const uint8_t *b)
+{
+    return b[0] | (uint32_t)b[1] << 8 | (uint32_t)b[2] << 16 | (uint32_t)b[3] << 24;
+}
+
+/* ROM:index, 12 bytes a second, into RAM, so a seek reads nothing extra. */
 static bool read_index(void)
 {
-    uint8_t entry[6];
+    uint8_t entry[12];
     unsigned s;
     int fd = open("ROM:index", O_RDONLY);
     if (fd < 0 || seconds > MAX_SECONDS)
         return false;
     for (s = 0; s < seconds; s++)
     {
-        if (read(fd, entry, 6) != 6)
+        if (read(fd, entry, sizeof(entry)) != sizeof(entry))
             return false;
-        second_at[s].offset =
-            entry[0] | (uint32_t)entry[1] << 8 | (uint32_t)entry[2] << 16 | (uint32_t)entry[3] << 24;
+        second_at[s].offset = le32(entry);
         second_at[s].block = entry[4] | entry[5] << 8;
+        second_at[s].seek_offset = le32(entry + 6);
+        second_at[s].seek_len = entry[10] | entry[11] << 8;
     }
     close(fd);
     return true;
@@ -964,14 +1014,15 @@ int main(int argc, char *argv[])
     }
     frames_fd = open("ROM:frames", O_RDONLY);
     if (frames_fd < 0 || read(frames_fd, header, HEADER_BYTES) != HEADER_BYTES ||
-        header[0] != 'B' || header[1] != 'A' || header[2] != 'D' || header[3] != '6')
+        header[0] != 'B' || header[1] != 'A' || header[2] != 'D' || header[3] != '7')
     {
         puts("ROM:frames is missing.");
         return 1;
     }
     frames = header[4] | header[5] << 8;
     seconds = (frames + FPS - 1) / FPS;
-    if (!read_index())
+    seek_fd = open("ROM:seek", O_RDONLY);
+    if (seek_fd < 0 || !read_index())
     {
         puts("ROM:index is missing.");
         return 1;

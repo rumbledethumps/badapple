@@ -1,31 +1,45 @@
 #!/usr/bin/env python3
-"""Bad Apple!! encoder, experimental: exact tiles, uploaded as they are needed.
+"""Bad Apple!! encoder: exact tiles, uploaded as they are needed.
 
 Each frame is cut into 80x60 tiles of its own pixels, so thin lines, like a
 broom handle narrower than a cell, keep every piece. The source is scaled to
-640x480 and cut at EDGE; real gray, found as in encode.py, is drawn as a
-checkerboard.
+640x480 and cut at EDGE; real gray, soft shadow and glow, is drawn in Bayer
+dots, one level a cell.
 
 The three planes hold 765 tiles at a time, 255 each after the empty tile 0,
 and a tile can show from any plane: plane 0 is opaque black under it, and
-black is clear on planes 1 and 2. The stream uploads each frame's new tiles
-into slots that the frame on screen does not use, and keeps tiles that stay
-where they are. A frame may use at most PER_FRAME tiles, so it and the frame
-on screen always fit; a busier frame shows its rarest tiles as the nearest
-one it keeps, counting border pixels BORDER_WEIGHT times.
+black is clear on planes 1 and 2. They work as a cache, planned with the
+whole video in view:
+
+- While frame n loads, frame n - 1 is on screen, so their tiles must fit in
+  the 765 slots together. Where two frames need more, the later one keeps
+  its tiles in common with the earlier and its most used new ones; the rest
+  show the nearest it keeps, counting border pixels BORDER_WEIGHT times.
+  No frame keeps more than MAX_FRAME, so the next always has room.
+- A new tile goes in the slot whose tile is needed again furthest in the
+  future, or never (Belady's rule), never one the frame on screen or the
+  frame loading uses.
+- A frame that costs the 6502 less than TARGET cycles to decode uploads
+  tiles that frames up to AHEAD frames later need, while a slot's tile is
+  needed later than they are, so a busy frame has less to upload.
 
 Every write in the stream is to an XRAM address: the tiles at 0, the two map
 buffers from 6144, frame n in buffer n % 2. The player does what the stream
 says.
 
-frames.bin   16-byte header ("BAD6", frame count, first source frame, fps,
+frames.bin   16-byte header ("BAD7", frame count, first source frame, fps,
              length of frame 0's block), then per frame its block and its
              sound. A block: the next block's length (2 bytes), flags (1
-             byte; 1 clears the frame's map buffer first), then writes of
-             an XRAM address (2 bytes), a count (1 to 255), and that many
-             bytes, then FF FF. The first two frames of each second are
-             keyframes: their buffers are cleared, and they upload every
-             tile they use, so the player can start there.
+             byte, 0), then writes of an XRAM address (2 bytes), a count (1
+             to 255), and that many bytes, then FF FF.
+seek.bin     for each second, a seek record: what the stream expects to be
+             in XRAM when that second's first frame loads, every tile slot
+             and both map buffers. Flags (1 byte; 1 clears both map buffers
+             first), then parts of up to 8 KB: a length (2 bytes), the same
+             writes, FF FF; then a length of 0.
+index.bin    for each second, 12 bytes: the offset of its first frame in
+             frames.bin (4), that frame's block length (2), the offset of
+             its seek record in seek.bin (4), and the record's length (2).
 
 usage: encode_exact.py video [--seconds N] [--start S] [--out DIR] [--archive A]
 """
@@ -50,25 +64,40 @@ CELLS = COLS * ROWS
 LAYERS = 3
 SLOTS_PER_LAYER = 255
 SLOTS = LAYERS * SLOTS_PER_LAYER
-PER_FRAME = SLOTS // 2
+MAX_FRAME = 700
+TARGET = 60000  # cycles
+AHEAD = 90
+CLEAR_BOTH = 1
+SEEK_PART = 8192  # a seek record is read and applied in parts of up to this
 XRAM_TILES = 0
 XRAM_MAPS = LAYERS * 256 * TILE
 FRAME_BYTES = LAYERS * CELLS
 END = b"\xff\xff"
-KEYFRAME = 1
 
 Y, X = np.mgrid[0:H, 0:W]
-CHECKER = (X + Y) % 2 == 1
+BAYER = (np.array([[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]])[Y % 4, X % 4] + 0.5) / 16
 TY, TX = np.mgrid[0:TILE, 0:TILE]
 BORDER = np.where((TX == 0) | (TX == TILE - 1) | (TY == 0) | (TY == TILE - 1), 4, 1).ravel()
 
 
-def composite(img, lo, hi, opening, edge):
-    """The frame's 640x480 pixels: the edge, and real gray as a checkerboard."""
-    real = E.opening((img > lo) & (img < hi), opening)
+def composite(img, lo, hi, opening, edge, grad, levels, gamma):
+    """The frame's 640x480 pixels: the edge, and real gray dithered.
+
+    Real gray is source pixels between lo and hi whose slope, after a 3x3
+    box blur, is under grad (in 0..255 a pixel): antialiasing along a hard
+    edge is steep, soft shadow and glow are not. The opening drops specks.
+    Each cell of real gray takes one of levels + 1 Bayer 4x4 patterns, from
+    its mean of the scaled source raised to gamma, as the dots light it."""
+    pad = np.pad(img, 1, mode="edge")
+    soft = sum(pad[y:y + img.shape[0], x:x + img.shape[1]] for y in range(3) for x in range(3)) / 9
+    gy, gx = np.gradient(soft)
+    real = E.opening((img > lo) & (img < hi) & (np.hypot(gx, gy) * 255 < grad), opening)
     big = np.asarray(Image.fromarray((img * 255).astype(np.uint8)).resize((W, H), Image.BILINEAR)) / 255
     real_big = np.asarray(Image.fromarray(real.astype(np.uint8) * 255).resize((W, H), Image.BILINEAR)) >= 128
-    return ((big >= edge) & ~real_big) | (real_big & CHECKER)
+    cell = (big ** gamma).reshape(ROWS, TILE, COLS, TILE).mean(axis=(1, 3))
+    level = np.round(cell * levels) / levels
+    dots = level.repeat(TILE, 0).repeat(TILE, 1) > BAYER
+    return ((big >= edge) & ~real_big) | (real_big & dots)
 
 
 def cells_of(pixels):
@@ -119,67 +148,182 @@ def map_runs(addr0, cur, prev):
     return out
 
 
-class Slots:
-    """Which tile each of the 765 slots holds, as the player's XRAM will."""
-
-    def __init__(self, in_order):
-        self.in_order = in_order          # fill free slots lowest first, so uploads join
-        self.content = [None] * SLOTS     # tile bytes, or None when unknown
-        self.where = {}                   # tile bytes to slot
-        self.used = [0] * SLOTS           # the frame that last used it
-        self.showing = set()              # slots the frame on screen uses
-
-    def forget(self):
-        """After a seek the slots hold anything: trust none of them."""
-        self.content = [None] * SLOTS
-        self.where = {}
-
-    def place(self, tiles, n):
-        """Slots for this frame's tiles; returns {tile: slot} and uploads."""
-        slot_of, uploads, taken = {}, [], set()
-        for t in tiles:
-            s = self.where.get(t)
-            if s is not None:
-                slot_of[t] = s
-                taken.add(s)
-        free = [s for s in range(SLOTS) if s not in self.showing and s not in taken]
-        if not self.in_order:
-            free.sort(key=lambda s: self.used[s])
-        fi = 0
-        for t in tiles:
-            if t in slot_of:
-                continue
-            s = free[fi]
-            fi += 1
-            old = self.content[s]
-            if old is not None and self.where.get(old) == s:
-                del self.where[old]
-            self.content[s] = t
-            self.where[t] = s
-            slot_of[t] = s
-            uploads.append(s)
-        for s in slot_of.values():
-            self.used[s] = n
-        return slot_of, uploads
+def cost(nruns, nbytes):
+    """The 6502's cycles to apply a block, roughly: a run's setup, then
+    about 8.6 cycles a byte through the portals."""
+    return nruns * 70 + nbytes * 8.6
 
 
-def budget(cells, limit):
-    """At most limit distinct tiles: the rarest become their nearest kept."""
-    keys = [c.tobytes() for c in cells]
-    count = {}
-    for k in keys:
-        count[k] = count.get(k, 0) + 1
-    count.pop(bytes(TILE), None)
-    if len(count) <= limit:
-        return keys, 0
-    ranked = sorted(count, key=lambda k: -count[k])
-    kept = ranked[:limit]
-    kept_px = np.unpackbits(np.frombuffer(b"".join(kept), np.uint8).reshape(-1, TILE), axis=1).astype(np.int16)
-    swap = {}
-    for k in ranked[limit:]:
-        px = np.unpackbits(np.frombuffer(k, np.uint8)).astype(np.int16)
-        swap[k] = kept[int(np.argmin((np.abs(kept_px - px) * BORDER).sum(axis=1)))]
-    return [swap.get(k, k) for k in keys], sum(count[k] for k in ranked[limit:])
+def nearest(kept_px, px):
+    return int(np.argmin((np.abs(kept_px - px) * BORDER).sum(axis=1)))
+
+
+def unpack(keys):
+    return np.unpackbits(np.array(keys, ">u8").view(np.uint8).reshape(-1, 8), axis=1).astype(np.int16)
+
+
+def budgets(frames):
+    """Each frame's cells, as tile keys, after the limits: with the frame
+    before it, no more than SLOTS distinct tiles, and itself no more than
+    MAX_FRAME. Returns the cells and the count of cells changed."""
+    out, prev, changed = [], set(), 0
+    for cells in frames:
+        keys, counts = np.unique(cells, return_counts=True)
+        count = {int(k): int(c) for k, c in zip(keys, counts) if k}
+        shared = [k for k in count if k in prev]
+        new = sorted((k for k in count if k not in prev), key=lambda k: -count[k])
+        room = min(SLOTS - len(prev), MAX_FRAME - len(shared))
+        if len(new) <= room:
+            out.append(cells)
+            prev = set(count)
+            continue
+        kept = shared + new[:max(room, 0)]
+        kept_px = unpack(kept)
+        swap = {k: kept[nearest(kept_px, unpack([k])[0])] for k in new[max(room, 0):]}
+        changed += sum(count[k] for k in swap)
+        cells = np.array([swap.get(int(k), int(k)) for k in cells], np.uint64)
+        out.append(cells)
+        prev = set(kept)
+    return out, changed
+
+
+class Plan:
+    """The slots, as the player's XRAM will hold them, and when each tile is
+    needed next."""
+
+    def __init__(self, frames):
+        self.uses = {}
+        for n, cells in enumerate(frames):
+            for k in np.unique(cells).tolist():
+                if k:
+                    self.uses.setdefault(k, []).append(n)
+        self.content = [0] * SLOTS        # tile key, 0 when empty
+        self.where = {}                   # tile key to slot
+        self.next_use = np.full(SLOTS, -1, np.int64)  # -1 empty, else frame
+
+    def next_after(self, key, n):
+        """The first frame after n that uses key, or a large number."""
+        u = self.uses[key]
+        i = int(np.searchsorted(u, n, side="right"))
+        return u[i] if i < len(u) else 1 << 40
+
+    def victim(self, protect):
+        """The slot to take: empty first, else the tile needed furthest away."""
+        score = np.where(self.next_use < 0, 1 << 50, self.next_use).astype(np.float64)
+        score[list(protect)] = -1
+        s = int(np.argmax(score))
+        return s if score[s] >= 0 else None
+
+    def put(self, s, key, n):
+        old = self.content[s]
+        if old and self.where.get(old) == s:
+            del self.where[old]
+        self.content[s] = key
+        self.where[key] = s
+        self.next_use[s] = self.next_after(key, n - 1)
+
+    def refresh(self, n):
+        """After frame n: each slot's tile's next use after n."""
+        for s in np.flatnonzero(self.next_use == n).tolist():
+            self.next_use[s] = self.next_after(self.content[s], n)
+
+
+def tile_addr(s):
+    return XRAM_TILES + (s // SLOTS_PER_LAYER) * 256 * TILE + (s % SLOTS_PER_LAYER + 1) * TILE
+
+
+def tile_bytes(key):
+    return int(key).to_bytes(8, "big")
+
+
+def plan_stream(frames, gap, target, ahead, heavy):
+    """Plans the stream: for each frame its block of writes, and for each
+    second its seek record. heavy maps a frame to how many of its tiles to
+    upload ahead, in cheaper frames before it."""
+    global XRAM_MODEL
+    XRAM_MODEL = np.zeros(65536, np.uint8)
+    count = len(frames)
+    plan = Plan(frames)
+    heavy = dict(heavy)
+    blocks, seeks, costs, uploaded, early = [], [], [], 0, 0
+    buffers = [np.zeros(FRAME_BYTES, np.uint8) for _ in range(2)]
+    showing = set()                       # slots of the frame on screen
+    for n, cells in enumerate(frames):
+        if n % E.FPS == 0:
+            # A seek starts here: every tile slot and both map buffers as the
+            # stream expects them now.
+            tiles = XRAM_MODEL[XRAM_TILES:XRAM_MAPS].tobytes()
+            writes = [(XRAM_TILES, tiles)]
+            for b in range(2):
+                nz = np.flatnonzero(buffers[b])
+                writes += map_runs(XRAM_MAPS + b * FRAME_BYTES, buffers[b], np.zeros(FRAME_BYTES, np.uint8))
+            # In parts of up to SEEK_PART bytes, each read into the ring and
+            # applied in turn.
+            seek, part = bytearray([CLEAR_BOTH]), bytearray()
+            for addr, data in sorted(writes):
+                for at in range(0, len(data), 255):
+                    piece = data[at:at + 255]
+                    run = struct.pack("<HB", addr + at, len(piece)) + piece
+                    if len(part) + len(run) + len(END) > SEEK_PART:
+                        seek += struct.pack("<H", len(part) + len(END)) + part + END
+                        part = bytearray()
+                    part += run
+            seek += struct.pack("<H", len(part) + len(END)) + part + END + struct.pack("<H", 0)
+            seeks.append(bytes(seek))
+
+        keys = set(np.unique(cells).tolist()) - {0}
+        protect = set(showing) | {plan.where[k] for k in keys if k in plan.where}
+        uploads = []
+        for k in sorted(keys - set(plan.where)):
+            s_ = plan.victim(protect)
+            plan.put(s_, k, n)
+            protect.add(s_)
+            uploads.append(s_)
+        slot_of = {k: plan.where[k] for k in keys}
+
+        maps = np.zeros(FRAME_BYTES, np.uint8)
+        nzc = np.flatnonzero(cells)
+        for c in nzc.tolist():
+            s_ = slot_of[int(cells[c])]
+            maps[(s_ // SLOTS_PER_LAYER) * CELLS + c] = s_ % SLOTS_PER_LAYER + 1
+        buf = n % 2
+        map_writes = map_runs(XRAM_MAPS + buf * FRAME_BYTES, maps, buffers[buf])
+        nb = sum(len(d) for _, d in map_writes) + 8 * len(uploads)
+        here = cost(len(map_writes) + len(uploads), nb)
+
+        # Upload ahead while this frame is cheap: tiles of the next frames,
+        # each into the slot needed furthest away, if that is later.
+        if here < target:
+            for m in range(n + 1, min(count, n + 1 + ahead)):
+                if heavy.get(m, 0) <= 0:
+                    continue
+                for k in sorted(set(np.unique(frames[m]).tolist()) - {0} - set(plan.where)):
+                    if heavy[m] <= 0:
+                        break
+                    s_ = plan.victim(protect)
+                    if s_ is None or (plan.next_use[s_] >= 0 and plan.next_use[s_] <= m):
+                        break
+                    plan.put(s_, k, n)
+                    plan.next_use[s_] = m
+                    protect.add(s_)
+                    uploads.append(s_)
+                    early += 1
+                    heavy[m] -= 1
+                    here += cost(1, 8)
+                    if here >= target:
+                        break
+                if here >= target:
+                    break
+        uploaded += len(uploads)
+
+        writes = [(tile_addr(s_), tile_bytes(plan.content[s_])) for s_ in uploads] + map_writes
+        block, nruns, _ = runs(writes, gap)
+        costs.append(cost(nruns, len(block) - 3 * nruns))
+        buffers[buf] = maps
+        blocks.append(block)
+        plan.refresh(n)
+        showing = set(slot_of.values())
+    return blocks, seeks, costs, uploaded, early
 
 
 def main():
@@ -191,114 +335,114 @@ def main():
     ap.add_argument("--seconds", type=float)
     ap.add_argument("--gray-lo", type=int, default=31)
     ap.add_argument("--gray-hi", type=int, default=254)
-    ap.add_argument("--opening", type=int, default=12)
+    ap.add_argument("--opening", type=int, default=2)
     ap.add_argument("--edge", type=int, default=127)
+    ap.add_argument("--grad", type=float, default=16, help="real gray is less steep than this, 0..255 a source pixel")
+    ap.add_argument("--levels", type=int, default=16, help="gray levels besides black, one a cell")
+    ap.add_argument("--gamma", type=float, default=2.2, help="the source's brightness to dot coverage")
     ap.add_argument("--fonts", default="data/fonts")
     ap.add_argument("--gap", type=int, default=4, help="unchanged bytes a run carries rather than start another")
-    ap.add_argument("--lru", action="store_true", help="fill the slots least recently used first")
+    ap.add_argument("--target", type=int, default=TARGET, help="6502 cycles a frame to fill with uploads ahead")
+    ap.add_argument("--ahead", type=int, default=AHEAD, help="frames ahead to upload for")
     ap.add_argument("--no-check", action="store_true")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
+    global GAP
+    GAP = args.gap
     if args.archive is None:
         whole = args.start == 0 and args.seconds is None
         args.archive = "src/badapple.tar.xz" if whole else os.path.join(args.out, "badapple.tar.xz")
-    global GAP
-    GAP = args.gap
     first = round(args.start * E.FPS)
     count = round(args.seconds * E.FPS) if args.seconds else None
 
+    # The frames' cells, as 64-bit tile keys, then the limits.
     t0 = time.time()
-    slots = Slots(not args.lru)
-    cost = []
-    buffers = [np.zeros(FRAME_BYTES, np.uint8) for _ in range(2)]
-    blocks, shown, stand_in_cells, uploaded = [], [], 0, 0
-    n = 0
+    raw = []
     for img in E.read_frames(args.video, first, count):
-        target = cells_of(composite(img, args.gray_lo / 255, args.gray_hi / 255, args.opening, args.edge / 255))
-        keys, replaced = budget(target, PER_FRAME)
-        stand_in_cells += replaced
-        key = n % E.FPS < 2
-        if n % E.FPS == 0:
-            slots.forget()
-        tiles = sorted(set(keys) - {bytes(TILE)})
-        slot_of, uploads = slots.place(tiles, n)
-        uploaded += len(uploads)
-        writes = [(XRAM_TILES + (s // SLOTS_PER_LAYER) * 256 * TILE + (s % SLOTS_PER_LAYER + 1) * TILE,
-                   slots.content[s]) for s in uploads]
-        maps = np.zeros(FRAME_BYTES, np.uint8)
-        for cell, k in enumerate(keys):
-            if k != bytes(TILE):
-                s = slot_of[k]
-                maps[(s // SLOTS_PER_LAYER) * CELLS + cell] = s % SLOTS_PER_LAYER + 1
-        buf = n % 2
-        prev = np.zeros(FRAME_BYTES, np.uint8) if key else buffers[buf]
-        if key:
-            XRAM_MODEL[XRAM_MAPS + buf * FRAME_BYTES:XRAM_MAPS + (buf + 1) * FRAME_BYTES] = 0
-        writes += map_runs(XRAM_MAPS + buf * FRAME_BYTES, maps, prev)
-        buffers[buf] = maps
-        block, nruns, _ = runs(writes, args.gap)
-        nbytes = len(block) - 3 * nruns
-        cost.append(nruns * 70 + nbytes * 8.6 + (FRAME_BYTES * 4.5 if key else 0))
-        blocks.append((KEYFRAME if key else 0, block))
-        shown.append(keys)
-        slots.showing = set(slot_of.values())
-        n += 1
-    count = n
+        px = composite(img, args.gray_lo / 255, args.gray_hi / 255, args.opening, args.edge / 255,
+                       args.grad, args.levels, args.gamma)
+        raw.append(cells_of(px).view(">u8").ravel().astype(np.uint64))
+    count = len(raw)
+    frames, changed = budgets(raw)
+    del raw
+
+    # Plan once with no uploads ahead, to find the frames that cost more
+    # than the target; then again, uploading some of their tiles ahead.
+    _, _, first_costs, _, _ = plan_stream(frames, args.gap, 0, 0, {})
+    heavy = {m: int((c - args.target) / cost(1, 8)) + 1 for m, c in enumerate(first_costs) if c > args.target}
+    blocks, seeks, costs, uploaded, early = plan_stream(frames, args.gap, args.target, args.ahead, heavy)
     encode_seconds = time.time() - t0
 
     audio = E.read_audio(args.video, first, count)
-    lengths = [3 + len(r) + len(END) for _, r in blocks] + [0]
+    lengths = [3 + len(b) + len(END) for b in blocks] + [0]
     offsets = []
     with open(os.path.join(args.out, "frames.bin"), "wb") as f:
-        f.write(b"BAD6" + struct.pack("<HHBH", count, first, E.FPS, lengths[0]) + bytes(5))
-        for i, (flags, r) in enumerate(blocks):
+        f.write(b"BAD7" + struct.pack("<HHBH", count, first, E.FPS, lengths[0]) + bytes(5))
+        for i, b in enumerate(blocks):
             offsets.append(f.tell())
-            f.write(struct.pack("<HB", lengths[i + 1], flags) + r + END + E.frame_audio(audio, i))
+            f.write(struct.pack("<HB", lengths[i + 1], 0) + b + END + E.frame_audio(audio, i))
+    seek_at = []
+    with open(os.path.join(args.out, "seek.bin"), "wb") as f:
+        for r in seeks:
+            seek_at.append(f.tell())
+            f.write(r)
     with open(os.path.join(args.out, "index.bin"), "wb") as f:
-        for i in range(0, count, E.FPS):
-            f.write(struct.pack("<IH", offsets[i], lengths[i]))
+        for sec, r in enumerate(seeks):
+            f.write(struct.pack("<IHIH", offsets[sec * E.FPS], lengths[sec * E.FPS], seek_at[sec], len(r)))
 
-    # Play it back as the player does, into a model of XRAM, starting both at
-    # 0:00 and at every second, and check each frame's cells at its flip.
+    # Play it back as the player does, into a model of XRAM, from the start
+    # and from every second's seek record, and check each frame at its flip.
     data = open(os.path.join(args.out, "frames.bin"), "rb").read()
+    seekdata = open(os.path.join(args.out, "seek.bin"), "rb").read()
 
-    def play(start_second, frames):
-        xram = np.zeros(65536, np.uint8)
-        at = offsets[start_second * E.FPS]
-        length = lengths[start_second * E.FPS]
-        for i in range(start_second * E.FPS, start_second * E.FPS + frames):
-            next_len, flags = struct.unpack_from("<HB", data, at)
+    def apply(xram, d, at, skip=3):
+        p = at + skip
+        while d[p:p + 2] != END:
+            addr, cnt = struct.unpack_from("<HB", d, p)
+            xram[addr:addr + cnt] = np.frombuffer(d, np.uint8, cnt, p + 3)
+            p += 3 + cnt
+
+    def play(second, frames_to_check):
+        xram = np.random.default_rng(second).integers(0, 256, 65536).astype(np.uint8)
+        xram[XRAM_TILES:XRAM_TILES + TILE] = 0
+        xram[XRAM_TILES + 256 * TILE:XRAM_TILES + 257 * TILE] = 0
+        xram[XRAM_TILES + 512 * TILE:XRAM_TILES + 513 * TILE] = 0
+        xram[XRAM_MAPS:XRAM_MAPS + 2 * FRAME_BYTES] = 0
+        p = seek_at[second] + 1
+        while True:
+            plen = struct.unpack_from("<H", seekdata, p)[0]
+            if not plen:
+                break
+            apply(xram, seekdata, p + 2, 0)
+            p += 2 + plen
+        at, length = offsets[second * E.FPS], lengths[second * E.FPS]
+        for i in range(second * E.FPS, second * E.FPS + frames_to_check):
+            next_len = struct.unpack_from("<H", data, at)[0]
+            apply(xram, data, at)
             buf = i % 2
-            if flags & KEYFRAME:
-                xram[XRAM_MAPS + buf * FRAME_BYTES:XRAM_MAPS + (buf + 1) * FRAME_BYTES] = 0
-            p = at + 3
-            while data[p:p + 2] != END:
-                addr, cnt = struct.unpack_from("<HB", data, p)
-                xram[addr:addr + cnt] = np.frombuffer(data, np.uint8, cnt, p + 3)
-                p += 3 + cnt
             maps = xram[XRAM_MAPS + buf * FRAME_BYTES:XRAM_MAPS + (buf + 1) * FRAME_BYTES].reshape(LAYERS, CELLS)
             tiles = xram[:LAYERS * 256 * TILE].reshape(LAYERS, 256, TILE)
             got = tiles[0][maps[0]] | tiles[1][maps[1]] | tiles[2][maps[2]]
-            want = np.frombuffer(b"".join(shown[i]), np.uint8).reshape(CELLS, TILE)
-            assert np.array_equal(got, want), f"frame {i} differs, started at {start_second} s"
+            want = np.array([tile_bytes(k) for k in frames[i].tolist()], dtype="S8")
+            want = np.frombuffer(want.tobytes(), np.uint8).reshape(CELLS, TILE)
+            assert np.array_equal(got, want), f"frame {i} differs, started at {second} s"
             at += length + E.SOUND_BYTES
             length = next_len
 
     if not args.no_check:
         play(0, count)
-        for second in range(1, (count + E.FPS - 1) // E.FPS):
+        for second in range(1, len(seeks)):
             play(second, min(2 * E.FPS, count - second * E.FPS))
-    c = np.array(cost)
+    c = np.array(costs)
+    print(f"Encoded {count} frames in {encode_seconds:.0f} s; {uploaded} tiles uploaded, {uploaded / count:.0f} a frame, "
+          f"{early} of them ahead; {changed} of {count * CELLS} cells show a nearest tile")
     print(f"6502 cycles a frame for decoding, estimated: mean {c.mean():,.0f}, 99.9th {np.percentile(c, 99.9):,.0f}, "
           f"max {c.max():,.0f}, of 266,667")
-
-    print(f"Encoded {count} frames in {encode_seconds:.0f} s; {uploaded} tiles uploaded, "
-          f"{uploaded / count:.0f} a frame; {stand_in_cells} of {count * CELLS} cells use a stand-in")
-    print(f"Wrote frames.bin ({len(data):,} bytes) and index.bin; blocks average "
+    print(f"Wrote frames.bin ({len(data):,} bytes), seek.bin ({len(seekdata):,}), index.bin; blocks average "
           f"{sum(lengths) / count:.0f} bytes, {max(lengths):,} at most")
     print(title.build(args.out, args.fonts))
     print(transport.build(args.out, args.fonts))
-    E.write_archive(args.archive, args.out, ["frames.bin", "index.bin", "title.bin", "transport.bin"])
+    E.write_archive(args.archive, args.out, ["frames.bin", "seek.bin", "index.bin", "title.bin", "transport.bin"])
     print(f"Wrote {args.archive} ({os.path.getsize(args.archive):,} bytes)")
 
 

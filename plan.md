@@ -855,3 +855,26 @@ starts the video. The README's screenshot then shows the title screen.
 - Any input acts at once, as well as showing the faded transport. At
   first the input that brought the transport back did nothing else, so a
   gamepad's A had to be pressed twice to pause.
+
+## Step 7: exact tiles
+
+- `src/encode_exact.py` cuts each frame's tiles from its pixels; thin
+  lines, like the broom handle at 2:09, keep every piece. Real gray is
+  found by its slope and drawn in 17 levels of a 4x4 ordered dither, one
+  level a cell (opening 2, slope under 16, gamma 2.2, from the tuner).
+- The three planes are one cache of 765 tiles, planned with the whole
+  video in view: two frames' tiles together fit, no frame takes more than
+  700, a new tile takes the slot needed furthest in the future (Belady),
+  and frames over 60,000 cycles have tiles uploaded ahead in cheaper
+  frames.
+- The stream writes to XRAM addresses: tiles at 0, map buffers from 6144.
+  Seeks read `seek.bin`, each second's whole XRAM state, so playback
+  carries no keyframes.
+- A frame's sound goes to the PCM device when its decoding starts: a large
+  block at 0:57 used to leave the device dry.
+- Results: 94 tile uploads a frame; 0.08% of cells show a nearest tile;
+  decoding 38,600 cycles in an average frame, 113,000 at most. In the
+  emulator, no frame is late at 8 MHz at full volume, 15 with the volume
+  lowered, where the volume scaler costs about 74,000 cycles a frame.
+- The emulator's windowed audio still skips while the player keeps the PCM
+  device fed; that is for the emulator.

@@ -36,89 +36,90 @@ The source is Niconico's 512x384 stream of `sm8628149`: 30 fps, 6573 frames,
 219.1 seconds. It is shadow art: hard black-and-white silhouettes, with soft
 gray where the animation draws motion blur and glows.
 
-### Hard edges over real gray
+### Exact tiles
 
 The VGA system draws each frame on three planes of 8x8 1bpp tiles
 ([mode 2](https://picocomputer.github.io/vga.html)), 80x60 tiles each on
-a 640x480 canvas. `src/encode.py` picks the tiles:
+a 640x480 canvas. `src/encode_exact.py` cuts each frame's tiles from its
+own pixels, so thin lines, like the broom handle at 2:09, keep every
+piece:
 
-1. **Real gray.** Source pixels from 31 to 254 of 255 are gray. Much of
-   that gray is a thin band along a hard edge, its antialiasing. An
-   opening drops it: the gray shrinks by 12 source pixels, then what is
-   left grows back. A band thinner than that is gone, and wide gray, the
-   motion blur, glows, and shadows, comes back.
-2. **Corner samples.** Each frame is averaged down to an 81x61 grid, one
-   sample at each corner of the 80x60 cells. Each sample is the average of
-   a box one cell wide around its corner.
-3. **Hard edges, planes 1 and 2.** In each cell, marching squares finds
-   where the outline at gray 127 crosses the cell's edges. Each crossing
-   is interpolated between the cell's corners and snapped to one of seven
-   positions along the tile edge. Two cells that share an edge compute the
-   same crossings from the same two corners, so outlines join up from tile
-   to tile. The light side of the outline is white, and the rest is clear,
-   as is everything inside the real gray.
-4. **Gray, plane 0.** The real gray gets an outline of its own, made the
-   same way, and is drawn as a checkerboard, every other pixel, on black.
-   Plane 0 is opaque, so it is also the black under everything.
+1. **Hard edges.** The source is scaled to 640x480 and cut at gray 127 of
+   255.
+2. **Real gray.** Soft shadow, glow, and motion blur are gray that changes
+   slowly: source pixels from 31 to 254 whose slope, after a 3x3 blur, is
+   under 16 levels a pixel, less specks under an opening of 2 pixels. The
+   antialiasing along a hard edge is steep, so it stays a hard edge.
+3. **Dots.** Each cell of real gray takes one of 17 levels, from its mean
+   brightness with a gamma of 2.2, drawn as a 4x4 ordered dither fixed to
+   the screen, so it holds still from frame to frame and costs only 17
+   tiles.
 
-### Tiles for the whole video
+`data/tuner/dither-tuner.html`, built by `data/tuner/make_dither_tuner.py`,
+tunes these against the source.
 
-Mode 2 holds 256 tiles for each plane. They load once, before the video
-starts, and do not change.
+### A cache of tiles
 
-- **Edges.** Planes 1 and 2 share the edge tiles. Tile 0 of both is
-  clear, so a cell shows a tile from one or the other, which gives 511.
-  The whole video uses 466, so every edge is exact.
-- **Gray.** Plane 0 holds the 256 gray tiles used most, with tile 0 all
-  black. The whole video uses 328. The next 45 go in the 45 spare edge
-  slots: a checkerboard tile looks the same on plane 1 or 2, over plane
-  0's black tile, in a cell with no edge.
-- **Stand-ins.** A cell whose tiles did not fit shows the nearest kept
-  tile: the one with the fewest different pixels, where a pixel on the
-  tile's border counts four times, because a step in an outline where two
-  tiles meet is easy to see. 1,339 of the video's 31.5 million cells use
-  a stand-in.
+A tile can show from any plane: plane 0 is opaque black under it, and
+black is clear on planes 1 and 2. So the three planes are one cache of
+765 tiles, 255 each after the empty tile 0, and the stream uploads tiles
+into it as frames need them. The encoder plans the cache with the whole
+video in view:
 
-`src/encode.py` writes two files, and packs them into
+- **Two frames at once.** While a frame loads, the one before it is on
+  screen, so their tiles must fit in the 765 slots together, and no frame
+  takes more than 700. Where two frames need more, the later keeps its
+  tiles in common with the earlier and its most used new ones; the rest
+  show the nearest kept tile, counting a border pixel four times, because
+  a step in an outline where two tiles meet is easy to see. That is 23,893
+  of the video's 31.5 million cells, 0.08%.
+- **Belady's rule.** A new tile takes the slot whose tile is needed again
+  furthest in the future, or never, and never a slot of the frame on
+  screen or the frame loading.
+- **Uploading ahead.** The encoder plans the stream twice. Frames that
+  would cost the 6502 more than 60,000 cycles to decode then have some of
+  their tiles uploaded in cheaper frames before them.
+
+Frames upload 94 tiles each on average, and the 6502's estimated decoding
+time is 38,600 cycles in an average frame and 113,000 in the worst, of the
+266,667 a frame has at 8 MHz.
+
+### The stream
+
+Every write in the stream is to an XRAM address: the tiles at 0, the two
+map buffers from 6144, frame n in buffer n % 2. The player does what the
+stream says. The buffer a frame loads into still holds the frame two
+before it, so a frame's maps are only the runs that change it.
+
+`src/encode_exact.py` writes these, and packs them into
 `src/badapple.tar.xz` for the build:
 
-- `tiles.bin`, 6,144 bytes: 256 tiles for each of the three planes, 8
-  bytes each, one byte per row, leftmost pixel in the high bit. The ROM
-  loads it into XRAM before the program starts.
-- `frames.bin`: a 16-byte header (`BAD5`, the frame count, the first
-  source frame, the frame rate, and the length of frame 0's delta block),
-  then for each frame its delta block and its sound, 4,108 bytes, as
-  described under [The audio](#the-audio). The ROM carries it as the
-  named asset `ROM:frames`.
-- `index.bin`: for each second, the file offset of its first frame and
-  the length of that frame's delta block, 6 bytes, 1.3 KB in all. The ROM
-  carries it as `ROM:index`.
+- `frames.bin`: a 16-byte header (`BAD7`, the frame count, the first
+  source frame, the frame rate, and the length of frame 0's block), then
+  for each frame its block and its sound, 4,108 bytes, as described under
+  [The audio](#the-audio). A block is the length of the next block, a flag
+  byte, then writes of a 2-byte address, a count of 1 to 255, and that
+  many bytes, joining writes up to four bytes apart, then FF FF. Blocks
+  average 2,705 bytes; `frames.bin` is 44.8 MB. The ROM carries it as
+  `ROM:frames`.
+- `seek.bin`: for each second, what the stream expects in XRAM when that
+  second starts, every tile slot and both map buffers, in parts of up to
+  8 KB. Playback never reads it; a seek, and the start, do. 2.7 MB, as
+  `ROM:seek`.
+- `index.bin`: for each second, where it starts in `frames.bin` and in
+  `seek.bin`, 12 bytes, 2.6 KB in all, as `ROM:index`.
 - `title.bin`: the title screen, from `src/title.py`, described under
-  [The title screen](#the-title-screen). The ROM carries it as
-  `ROM:title`.
+  [The title screen](#the-title-screen), as `ROM:title`.
 - `transport.bin`: the transport's palettes and images, from
   `src/transport.py`. The ROM loads it into XRAM before the program
   starts.
 
-A frame's three 80x60 maps, one tile number per byte, are 14,400 bytes,
-but few of them change from frame to frame. The player keeps two map
-buffers, so the buffer that a frame decodes into still holds the frame two
-before it, and the delta block holds only the runs that change it: a
-2-byte map offset, a count of 1 to 255, and that many tile numbers, with
-gaps of up to four unchanged bytes carried in the run. FF FF ends the
-block, which starts with the length of the next frame's block and a flag
-byte. The first two frames of each second are keyframes, against cleared
-maps, flagged so the player clears the buffer first: playback can start
-at any second. The delta blocks average 1,235 bytes a frame, 5,648 at
-most, and 8.1 MB in all, against 94.7 MB of maps. With the sound,
-`frames.bin` is 35.1 MB.
-
-The archive is 30.0 MB, and Git keeps it, so the build needs no source
+The archive is 36.5 MB, and Git keeps it, so the build needs no source
 video and no encoder. After writing the files, the encoder plays the
-stream back the way the player does, into two map buffers, draws the
-three planes, and checks that each frame comes out as encoded. It also
-writes `preview.mp4` in `data/encoded/`, the encoded frames with the
-soundtrack.
+stream back into a model of XRAM, from the start and from every second's
+seek record, and checks every frame. `src/encode.py`, the earlier
+encoder, which drew a fixed set of 511 marching-squares tiles, keeps the
+helpers that `src/encode_exact.py` shares.
 
 ## The player
 
@@ -129,17 +130,20 @@ soundtrack.
 - **The title screen** shows at start, and again at the end unless repeat
   is on, with the transport over it.
 - **A stream ring.** `read_xram()` reads the file into a 16 KB ring in
-  XRAM, 4 to 8 KB a read, whenever the ring has room.
-- **Decoding in the 6502.** Once a frame's delta block and sound are both
-  in the ring, the 6502 applies the runs to the back map buffer:
-  `src/copy.s` reads the ring through portal 1 and writes the maps through
-  portal 0, eight bytes a pass, about 8.6 cycles a byte. It stops after
-  about 256 bytes, so the main loop can check VSYNC between steps. Near
-  the end of the ring, where a run could wrap, C applies one run at a
-  time. A keyframe's buffer is cleared first, about 1 KB a step.
+  XRAM, 1 to 8 KB a read, whenever the ring has room.
+- **Decoding in the 6502.** Once a frame's block and sound are both in
+  the ring, the frame's sound goes to the PCM device, and the 6502 does
+  the block's writes, at the addresses it gives: `src/copy.s` reads the
+  ring through portal 1 and writes through portal 0, eight bytes a pass,
+  about 8.6 cycles a byte. It stops after about 256 bytes, so the main
+  loop can check VSYNC between steps. Near the end of the ring, where a
+  run could wrap, C applies one run at a time. The tiles are cleared at
+  start, so tile 0 of each plane is empty.
 - **Seeking.** `ROM:index` is read into 6502 RAM at start. To start at a
-  second, the player empties the PCM device, moves to that second's place
-  in the file, fills the ring, and decodes its keyframe.
+  second, the player empties the PCM device, clears both map buffers,
+  reads that second's seek record in parts and does its writes, then
+  moves to its place in `ROM:frames`, fills the ring, and decodes its
+  first frame.
 - **Double buffering.** One map buffer is on screen while the next frame
   decodes into the other.
 - **VSYNC.** A frame is shown by pointing all three planes at its maps.
@@ -251,7 +255,7 @@ cmake --build --preset llvm-mos/Release
 ```
 
 The build unpacks `src/badapple.tar.xz` into the build folder, and writes
-the 35 MB ROM to `build/llvm-mos/release/badapple/badapple.rp6502`.
+the 48 MB ROM to `build/llvm-mos/release/badapple/badapple.rp6502`.
 
 ### Encoding the video
 
@@ -267,12 +271,11 @@ variable font, `NotoSerif.ttf`) in `data/fonts/`. The source video stays in
 ```text
 yt-dlp -f "video-h264-360p-1+audio-aac-128kbps" -o "data/sm8628149-512x384.%(ext)s" \
     https://www.nicovideo.jp/watch/sm8628149
-python3 src/encode.py data/sm8628149-512x384.mp4
+python3 src/encode_exact.py data/sm8628149-512x384.mp4
 ```
 
-The whole video encodes in about two and a half minutes, plus two minutes
-the first time to build the tile sets, which the encoder caches in
-`data/encoded/tileset.npz`. The encoder writes `src/badapple.tar.xz`, and
+The whole video encodes in about three minutes, plus the playback check.
+The encoder writes `src/badapple.tar.xz`, and
 the same video and settings give the same archive, byte for byte, so Git
 sees a change only when the encoding changes.
 
@@ -294,7 +297,7 @@ the other options.
   `rp6502-emu badapple.rp6502 -- play repeat`; for the web player, in
   `args` of `rp6502_web()` in `CMakeLists.txt`.
 - **Web player.** The build also writes the web player to
-  `build/llvm-mos/release/web/badapple/`, with the 35 MB ROM. The
+  `build/llvm-mos/release/web/badapple/`, with the 48 MB ROM. The
   RP6502-WEB launch configuration serves it and opens it in a browser.
 - **Test.** `ctest --test-dir build/llvm-mos/release` runs the `play`
   test: two seconds in the emulator, which passes when the player finds
