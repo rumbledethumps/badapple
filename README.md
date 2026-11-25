@@ -46,14 +46,19 @@ piece:
 
 1. **Hard edges.** The source is scaled to 640x480 and cut at gray 127 of
    255.
-2. **Real gray.** Soft shadow, glow, and motion blur are gray that changes
-   slowly: source pixels from 31 to 254 whose slope, after a 3x3 blur, is
-   under 16 levels a pixel, less specks under an opening of 2 pixels. The
-   antialiasing along a hard edge is steep, so it stays a hard edge.
-3. **Dots.** Each cell of real gray takes one of 17 levels, from its mean
-   brightness with a gamma of 2.2, drawn as a 4x4 ordered dither fixed to
-   the screen, so it holds still from frame to frame and costs only 17
-   tiles.
+2. **Real gray.** Gray is every source pixel between black and white. A
+   square opening drops the gray thinner than it: the antialiasing along a
+   hard edge, and in a scene in motion, the motion blur. The opening comes
+   from each frame's motion share. Gray that comes and goes, where the
+   frame before or after has no gray within 4 pixels, is motion blur; gray
+   that stays and is wider than a 6-pixel ramp between black and white is
+   shadow. The share is blur over blur plus shadow: at 32% or less the
+   opening is 2 pixels, so a still scene keeps its shadows; at 64% or more
+   it is 16, so a spinning yin-yang is drawn sharp; between, in
+   proportion. 57% of frames take 2, 22% take 16.
+3. **Dots.** Each pixel of real gray takes one of 17 levels, from its
+   brightness with a gamma of 1.6, drawn as a 4x4 ordered dither fixed to
+   the screen, so it holds still from frame to frame.
 
 `data/tuner/dither-tuner.html`, built by `data/tuner/make_dither_tuner.py`,
 tunes these against the source.
@@ -71,8 +76,8 @@ video in view:
   takes more than 700. Where two frames need more, the later keeps its
   tiles in common with the earlier and its most used new ones; the rest
   show the nearest kept tile, counting a border pixel four times, because
-  a step in an outline where two tiles meet is easy to see. That is 23,893
-  of the video's 31.5 million cells, 0.08%.
+  a step in an outline where two tiles meet is easy to see. That is 44,142
+  of the video's 31.5 million cells, 0.14%.
 - **Belady's rule.** A new tile takes the slot whose tile is needed again
   furthest in the future, or never, and never a slot of the frame on
   screen or the frame loading.
@@ -80,8 +85,8 @@ video in view:
   would cost the 6502 more than 60,000 cycles to decode then have some of
   their tiles uploaded in cheaper frames before them.
 
-Frames upload 94 tiles each on average, and the 6502's estimated decoding
-time is 38,600 cycles in an average frame and 113,000 in the worst, of the
+Frames upload 107 tiles each on average, and the 6502's estimated decoding
+time is 40,800 cycles in an average frame and 121,000 in the worst, of the
 266,667 a frame has at 8 MHz.
 
 ### The stream
@@ -100,7 +105,7 @@ before it, so a frame's maps are only the runs that change it.
   described under [The audio](#the-audio). A block is the length of the next block, a flag
   byte, then writes of a 2-byte address, a count of 1 to 255, and that
   many bytes, joining writes up to four bytes apart, then FF FF. Blocks
-  average 2,705 bytes; `frames.bin` is 24.8 MB. The ROM carries it as
+  average 2,890 bytes; `frames.bin` is 26.0 MB. The ROM carries it as
   `ROM:frames`.
 - `seek.bin`: for each second, what the stream expects in XRAM when that
   second starts, every tile slot and both map buffers, in parts of up to
@@ -114,7 +119,7 @@ before it, so a frame's maps are only the runs that change it.
   `src/transport.py`. The ROM loads it into XRAM before the program
   starts.
 
-The archive is 16.4 MB, and Git keeps it, so the build needs no source
+The archive is 17.1 MB, and Git keeps it, so the build needs no source
 video and no encoder. After writing the files, the encoder plays the
 stream back into a model of XRAM, from the start and from every second's
 seek record, and checks every frame. `src/encode.py`, the earlier
@@ -271,7 +276,7 @@ sample:
   to move the noise out of the treble, but it lands at 1 to 4 kHz, where
   the ear is most sensitive, so the default is 0.
 
-With the delta blocks, the player reads about 113,000 bytes per second.
+With the delta blocks, the player reads about 119,000 bytes per second.
 
 ## Building
 
@@ -284,7 +289,7 @@ cmake --build --preset llvm-mos/Release
 ```
 
 The build unpacks `src/badapple.tar.xz` into the build folder, and writes
-the 28 MB ROM to `build/llvm-mos/release/badapple/badapple.rp6502`.
+the 29 MB ROM to `build/llvm-mos/release/badapple/badapple.rp6502`.
 
 ### Encoding the video
 
@@ -327,7 +332,7 @@ the other options.
   `rp6502-emu badapple.rp6502 -- play repeat`; for the web player, in
   `args` of `rp6502_web()` in `CMakeLists.txt`.
 - **Web player.** The build also writes the web player to
-  `build/llvm-mos/release/web/badapple/`, with the 28 MB ROM. The
+  `build/llvm-mos/release/web/badapple/`, with the 29 MB ROM. The
   RP6502-WEB launch configuration serves it and opens it in a browser.
 - **Test.** `ctest --test-dir build/llvm-mos/release` runs the `play`
   test: two seconds in the emulator, which passes when the player finds

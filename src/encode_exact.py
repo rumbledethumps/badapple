@@ -3,8 +3,10 @@
 
 Each frame is cut into 80x60 tiles of its own pixels, so thin lines, like a
 broom handle narrower than a cell, keep every piece. The source is scaled to
-640x480 and cut at EDGE; real gray, soft shadow and glow, is drawn in Bayer
-dots, one level a cell.
+640x480 and cut at EDGE; real gray is drawn in Bayer dots, a level a pixel.
+Real gray is what survives an opening that grows with the frame's motion,
+from 2 pixels in a still scene, which keeps its shadows, to 16 in one in
+motion, which drops its motion blur.
 
 The three planes hold 765 tiles at a time, 255 each after the empty tile 0,
 and a tile can show from any plane: plane 0 is opaque black under it, and
@@ -87,21 +89,81 @@ BORDER = np.where((TX == 0) | (TX == TILE - 1) | (TY == 0) | (TY == TILE - 1), 4
 def composite(img, lo, hi, opening, edge, grad, levels, gamma):
     """The frame's 640x480 pixels: the edge, and real gray dithered.
 
-    Real gray is source pixels between lo and hi whose slope, after a 3x3
-    box blur, is under grad (in 0..255 a pixel): antialiasing along a hard
-    edge is steep, soft shadow and glow are not. The opening drops specks.
-    Each cell of real gray takes one of levels + 1 Bayer 4x4 patterns, from
-    its mean of the scaled source raised to gamma, as the dots light it."""
-    pad = np.pad(img, 1, mode="edge")
-    soft = sum(pad[y:y + img.shape[0], x:x + img.shape[1]] for y in range(3) for x in range(3)) / 9
-    gy, gx = np.gradient(soft)
-    real = E.opening((img > lo) & (img < hi) & (np.hypot(gx, gy) * 255 < grad), opening)
+    Real gray is source pixels between lo and hi, and with grad, whose slope
+    after a 3x3 box blur is under grad (in 0..255 a pixel). The opening drops
+    specks and bands thinner than it. Each pixel of real gray takes one of
+    levels + 1 Bayer 4x4 patterns, from the scaled source raised to gamma, as
+    the dots light it."""
+    gray = (img > lo) & (img < hi)
+    if grad:
+        pad = np.pad(img, 1, mode="edge")
+        soft = sum(pad[y:y + img.shape[0], x:x + img.shape[1]] for y in range(3) for x in range(3)) / 9
+        gy, gx = np.gradient(soft)
+        gray &= np.hypot(gx, gy) * 255 < grad
+    real = E.opening(gray, opening)
     big = np.asarray(Image.fromarray((img * 255).astype(np.uint8)).resize((W, H), Image.BILINEAR)) / 255
     real_big = np.asarray(Image.fromarray(real.astype(np.uint8) * 255).resize((W, H), Image.BILINEAR)) >= 128
-    cell = (big ** gamma).reshape(ROWS, TILE, COLS, TILE).mean(axis=(1, 3))
-    level = np.round(cell * levels) / levels
-    dots = level.repeat(TILE, 0).repeat(TILE, 1) > BAYER
+    dots = np.round(big ** gamma * levels) / levels > BAYER
     return ((big >= edge) & ~real_big) | (real_big & dots)
+
+
+def shift(a, dy, dx, fill):
+    """a moved by (dy, dx), the edge it uncovers set to fill."""
+    out = np.full_like(a, fill)
+    h, w = a.shape
+    out[max(dy, 0):h + min(dy, 0), max(dx, 0):w + min(dx, 0)] = a[max(-dy, 0):h + min(-dy, 0), max(-dx, 0):w + min(-dx, 0)]
+    return out
+
+
+def near(mask, limit):
+    """Each pixel's distance to the nearest set one, 1 straight and 1.414
+    diagonal, exact up to limit."""
+    d = np.where(mask, 0.0, np.inf).astype(np.float32)
+    for _ in range(int(np.ceil(limit))):
+        n = d
+        for dy, dx, c in ((0, 1, 1), (0, -1, 1), (1, 0, 1), (-1, 0, 1),
+                          (1, 1, 1.414), (1, -1, 1.414), (-1, 1, 1.414), (-1, -1, 1.414)):
+            n = np.minimum(n, shift(d, dy, dx, np.inf) + np.float32(c))
+        d = n
+    return d
+
+
+def dilate(mask, r):
+    """Set where any pixel within r, square, is set."""
+    o = mask.copy()
+    for k in range(1, r + 1):
+        o |= shift(mask, 0, k, False) | shift(mask, 0, -k, False)
+    m = o.copy()
+    for k in range(1, r + 1):
+        m |= shift(o, k, 0, False) | shift(o, -k, 0, False)
+    return m
+
+
+def motion_share(cur, neighbors, lo, hi, reach, ramp):
+    """How much of the frame's gray moves, 0 to 1. Gray is source bytes
+    between lo and hi. Motion blur is gray that comes and goes: a frame
+    before or after has no gray within reach pixels. Shadow is gray that
+    stays and is wider than a ramp, its distance to the nearest black plus
+    to the nearest white over ramp. The share is blur over blur plus shadow,
+    as the tuner's shadow test counts it."""
+    gray = lambda f: (f > lo) & (f < hi)
+    g = gray(cur)
+    stay = np.ones_like(g)
+    for f in neighbors:
+        stay &= dilate(gray(f), reach)
+    soft = near(cur <= lo, ramp) + near(cur >= hi, ramp) <= ramp
+    blur = (g & ~stay).sum()
+    shadow = (g & stay & ~soft).sum()
+    return blur / (blur + shadow) if blur + shadow else 0.0
+
+
+def opening_for(share, args):
+    """The opening by motion: args.opening at a share of args.motion_low % or
+    less, args.opening_max at args.motion_high % or more, in proportion
+    between, so a still scene keeps its shadows and a moving one drops its
+    blur."""
+    t = (share * 100 - args.motion_low) / max(1e-6, args.motion_high - args.motion_low)
+    return round(args.opening + (args.opening_max - args.opening) * min(1, max(0, t)))
 
 
 def cells_of(pixels):
@@ -348,13 +410,18 @@ def main():
     ap.add_argument("--archive")
     ap.add_argument("--start", type=float, default=0.0)
     ap.add_argument("--seconds", type=float)
-    ap.add_argument("--gray-lo", type=int, default=31)
-    ap.add_argument("--gray-hi", type=int, default=254)
-    ap.add_argument("--opening", type=int, default=2)
+    ap.add_argument("--gray-lo", type=int, default=0)
+    ap.add_argument("--gray-hi", type=int, default=255)
+    ap.add_argument("--opening", type=int, default=2, help="the opening of a still scene")
+    ap.add_argument("--opening-max", type=int, default=16, help="the opening of a scene in motion")
+    ap.add_argument("--motion-low", type=float, default=32, help="motion share, %%, at or below which the opening is --opening")
+    ap.add_argument("--motion-high", type=float, default=64, help="motion share, %%, at or above which it is --opening-max")
+    ap.add_argument("--reach", type=int, default=4, help="pixels gray may move between frames and still count as staying")
+    ap.add_argument("--ramp", type=float, default=6, help="pixels wide or less, gray between black and white is a soft edge")
     ap.add_argument("--edge", type=int, default=127)
-    ap.add_argument("--grad", type=float, default=16, help="real gray is less steep than this, 0..255 a source pixel")
-    ap.add_argument("--levels", type=int, default=16, help="gray levels besides black, one a cell")
-    ap.add_argument("--gamma", type=float, default=2.2, help="the source's brightness to dot coverage")
+    ap.add_argument("--grad", type=float, default=0, help="real gray is less steep than this, 0..255 a source pixel; 0 for any")
+    ap.add_argument("--levels", type=int, default=16, help="gray levels besides black")
+    ap.add_argument("--gamma", type=float, default=1.6, help="the source's brightness to dot coverage")
     ap.add_argument("--fonts", default="data/fonts")
     ap.add_argument("--gap", type=int, default=4, help="unchanged bytes a run carries rather than start another")
     ap.add_argument("--target", type=int, default=TARGET, help="6502 cycles a frame to fill with uploads ahead")
@@ -374,11 +441,25 @@ def main():
 
     # The frames' cells, as 64-bit tile keys, then the limits.
     t0 = time.time()
-    raw = []
-    for img in E.read_frames(args.video, first, count):
-        px = composite(img, args.gray_lo / 255, args.gray_hi / 255, args.opening, args.edge / 255,
+    raw, openings = [], []
+
+    def frame(prev, cur, nxt):
+        src = lambda f: np.round(f * 255).astype(np.uint8)
+        share = motion_share(src(cur), [src(f) for f in (prev, nxt) if f is not None], args.gray_lo, args.gray_hi,
+                             args.reach, args.ramp)
+        opening = opening_for(share, args)
+        openings.append(opening)
+        px = composite(cur, args.gray_lo / 255, args.gray_hi / 255, opening, args.edge / 255,
                        args.grad, args.levels, args.gamma)
         raw.append(cells_of(px).view(">u8").ravel().astype(np.uint64))
+
+    prev = cur = None
+    for img in E.read_frames(args.video, first, count):
+        if cur is not None:
+            frame(prev, cur, img)
+        prev, cur = cur, img
+    if cur is not None:
+        frame(prev, cur, None)
     count = len(raw)
     frames, changed = budgets(raw)
     del raw
@@ -451,6 +532,9 @@ def main():
         for second in range(1, len(seeks)):
             play(second, min(2 * E.FPS, count - second * E.FPS))
     c = np.array(costs)
+    o = np.array(openings)
+    print(f"Opening by motion: {np.mean(o == args.opening):.0%} of frames at {args.opening}, "
+          f"{np.mean(o == args.opening_max):.0%} at {args.opening_max}, mean {o.mean():.1f}")
     print(f"Encoded {count} frames in {encode_seconds:.0f} s; {uploaded} tiles uploaded, {uploaded / count:.0f} a frame, "
           f"{early} of them ahead; {changed} of {count * CELLS} cells show a nearest tile")
     print(f"6502 cycles a frame for decoding, estimated: mean {c.mean():,.0f}, 99.9th {np.percentile(c, 99.9):,.0f}, "

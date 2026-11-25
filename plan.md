@@ -901,3 +901,22 @@ starts the video. The README's screenshot then shows the title screen.
   match a reference decode byte for byte. At 7.5 MHz three gaps of about
   12 ms (1:03, 1:55); at 7 MHz a few late frames and short gaps. The
   last commit held to about 5 MHz.
+
+## Step 9: per-pixel gray, opening by motion
+
+- Real gray takes a level a pixel, not a cell: shadows lose their
+  stair-steps for about 1,000 cycles a frame more.
+- The tuner's shadow test sorts gray into motion blur (gray that comes and
+  goes: no gray within 4 pixels in the frame before or after), soft edge
+  (a ramp of 6 pixels or less between black and white) and shadow. As a
+  mask it did not hold up; as a measure it does: each frame's opening is 2
+  at a motion share (blur over blur plus shadow) of 32% or less, 16 at 64%
+  or more, in proportion between. Opening only, gray 0 to 255, no slope
+  test, gamma 1.6, 16 levels, line 127, chosen in the tuner.
+- Results: 57% of frames take opening 2, 22% take 16. 107 tile uploads a
+  frame, 40,800 cycles in an average frame, 121,000 at most; archive
+  17.1 MB. In the emulator, the whole video at 8 MHz with no late frame
+  and no gap in the sound; at 7.5 MHz one 12 ms gap, at 1:03.7. The busy
+  stretch at 1:55 takes a large opening and no longer gaps.
+- `--gap 8` lowers the estimated cycles but plays worse at 7.5 MHz, so the
+  gap stays 4.
