@@ -6,7 +6,8 @@ broom handle narrower than a cell, keep every piece. The source is scaled to
 640x480 and cut at EDGE; real gray is drawn in Bayer dots, a level a pixel.
 Real gray is what survives an opening that grows with the frame's motion,
 from 2 pixels in a still scene, which keeps its shadows, to 16 in one in
-motion, which drops its motion blur.
+motion, which drops its motion blur; the motion is averaged over nearby
+frames so the opening eases between scenes.
 
 The three planes hold 765 tiles at a time, 255 each after the empty tile 0,
 and a tile can show from any plane: plane 0 is opaque black under it, and
@@ -418,6 +419,7 @@ def main():
     ap.add_argument("--motion-high", type=float, default=64, help="motion share, %%, at or above which it is --opening-max")
     ap.add_argument("--reach", type=int, default=4, help="pixels gray may move between frames and still count as staying")
     ap.add_argument("--ramp", type=float, default=6, help="pixels wide or less, gray between black and white is a soft edge")
+    ap.add_argument("--smooth", type=int, default=8, help="frames each side the motion share is averaged over")
     ap.add_argument("--edge", type=int, default=127)
     ap.add_argument("--grad", type=float, default=0, help="real gray is less steep than this, 0..255 a source pixel; 0 for any")
     ap.add_argument("--levels", type=int, default=16, help="gray levels besides black")
@@ -443,23 +445,30 @@ def main():
     t0 = time.time()
     raw, openings = [], []
 
-    def frame(prev, cur, nxt):
-        src = lambda f: np.round(f * 255).astype(np.uint8)
-        share = motion_share(src(cur), [src(f) for f in (prev, nxt) if f is not None], args.gray_lo, args.gray_hi,
-                             args.reach, args.ramp)
-        opening = opening_for(share, args)
-        openings.append(opening)
-        px = composite(cur, args.gray_lo / 255, args.gray_hi / 255, opening, args.edge / 255,
-                       args.grad, args.levels, args.gamma)
-        raw.append(cells_of(px).view(">u8").ravel().astype(np.uint64))
-
+    # Each frame's motion share, from it and its neighbours; then the
+    # shares averaged over --smooth frames each side, so the opening eases
+    # from one scene's to the next rather than flickering.
+    src = lambda f: np.round(f * 255).astype(np.uint8)
+    shares = []
     prev = cur = None
     for img in E.read_frames(args.video, first, count):
+        img = src(img)
         if cur is not None:
-            frame(prev, cur, img)
+            shares.append(motion_share(cur, [f for f in (prev, img) if f is not None], args.gray_lo, args.gray_hi,
+                                       args.reach, args.ramp))
         prev, cur = cur, img
     if cur is not None:
-        frame(prev, cur, None)
+        shares.append(motion_share(cur, [prev] if prev is not None else [], args.gray_lo, args.gray_hi,
+                                   args.reach, args.ramp))
+    n = args.smooth
+    padded = np.pad(np.array(shares), n, mode="edge")
+    smoothed = np.convolve(padded, np.ones(2 * n + 1) / (2 * n + 1), mode="valid")
+    openings = [opening_for(s, args) for s in smoothed]
+
+    for i, img in enumerate(E.read_frames(args.video, first, count)):
+        px = composite(img, args.gray_lo / 255, args.gray_hi / 255, openings[i], args.edge / 255,
+                       args.grad, args.levels, args.gamma)
+        raw.append(cells_of(px).view(">u8").ravel().astype(np.uint64))
     count = len(raw)
     frames, changed = budgets(raw)
     del raw

@@ -52,10 +52,11 @@ piece:
    from each frame's motion share. Gray that comes and goes, where the
    frame before or after has no gray within 4 pixels, is motion blur; gray
    that stays and is wider than a 6-pixel ramp between black and white is
-   shadow. The share is blur over blur plus shadow: at 32% or less the
-   opening is 2 pixels, so a still scene keeps its shadows; at 64% or more
-   it is 16, so a spinning yin-yang is drawn sharp; between, in
-   proportion. 57% of frames take 2, 22% take 16.
+   shadow. The share is blur over blur plus shadow, averaged over 8
+   frames each side so the opening eases between scenes rather than
+   flickering: at 32% or less the opening is 2 pixels, so a still scene
+   keeps its shadows; at 64% or more it is 16, so a spinning yin-yang is
+   drawn sharp; between, in proportion. 56% of frames take 2, 17% take 16.
 3. **Dots.** Each pixel of real gray takes one of 17 levels, from its
    brightness with a gamma of 1.6, drawn as a 4x4 ordered dither fixed to
    the screen, so it holds still from frame to frame.

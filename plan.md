@@ -920,3 +920,9 @@ starts the video. The README's screenshot then shows the title screen.
   stretch at 1:55 takes a large opening and no longer gaps.
 - `--gap 8` lowers the estimated cycles but plays worse at 7.5 MHz, so the
   gap stays 4.
+- The share is averaged over 8 frames each side (`--smooth 8`): frame by
+  frame, the opening could jump between 2 and 16 and a shadow blink, as
+  under the girl at 2:27. Smoothed: 56% of frames at 2, 17% at 16; 106
+  uploads a frame, 40,700 cycles on average, 127,000 at most; archive
+  17.1 MB. 8 MHz plays clean; at 7.5 MHz, three short gaps and one late
+  frame at 1:55, where the busy stretch now takes a smaller opening.
