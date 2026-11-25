@@ -107,7 +107,7 @@ class Screen:
 
 
 def layout(s):
-    s.center(BUTTER, "title", "Bad Apple!!", 84)
+    s.center(BUTTER, "title", "Bad Apple!!", 76)
     s.center(WHITE, "small", "for the Picocomputer 6502", 118)
 
     # Three columns, centered as a block: heading, name, role.
