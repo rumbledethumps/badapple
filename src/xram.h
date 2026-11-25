@@ -173,16 +173,9 @@ typedef struct
 
 typedef struct
 {
-    uint8_t tiles[LAYERS][256][8];             /* [layer], loaded from tiles.bin */
-    mode2_config_t config[LAYERS];             /* [layer] */
-    mode2_config_t title_config[TITLE_BANDS];  /* [band] */
-    uint16_t palette[LAYERS][2];               /* [layer][color] */
-    uint16_t title_palette[16];
-    keyboard_t keyboard;
-    tablet_t tablet;
-    gamepad_t gamepad;
-    uint8_t transport[TRANSPORT_BYTES]; /* loaded from transport.bin */
-    mode5_csprite_t sprites[SPRITES];
+    /* The tiles and the map buffers first, at fixed addresses, because the
+     * stream writes to them by address: XRAM_TILES and XRAM_MAPS below. */
+    uint8_t tiles[LAYERS][256][8];             /* [layer], written by the stream */
     union
     {
         struct
@@ -196,6 +189,15 @@ typedef struct
             uint8_t map[MAP_BYTES];
         } title;
     } area;
+    mode2_config_t config[LAYERS];             /* [layer] */
+    mode2_config_t title_config[TITLE_BANDS];  /* [band] */
+    uint16_t palette[LAYERS][2];               /* [layer][color] */
+    uint16_t title_palette[16];
+    keyboard_t keyboard;
+    tablet_t tablet;
+    gamepad_t gamepad;
+    uint8_t transport[TRANSPORT_BYTES]; /* loaded from transport.bin */
+    mode5_csprite_t sprites[SPRITES];
 } xram_layout_t;
 
 _Static_assert(sizeof(xram_layout_t) <= 0x10000, "the layout fits in 64 KB of XRAM");
@@ -214,5 +216,9 @@ _Static_assert(sizeof(xram_layout_t) <= 0x10000, "the layout fits in 64 KB of XR
 #define XRAM_RING offsetof(xram_layout_t, area.video.ring)
 #define XRAM_TITLE_TILES offsetof(xram_layout_t, area.title.tiles)
 #define XRAM_TITLE_MAP offsetof(xram_layout_t, area.title.map)
+
+/* src/encode_exact.py writes to these addresses. */
+_Static_assert(XRAM_TILES == 0, "the tiles are at 0");
+_Static_assert(XRAM_MAPS == 6144, "the map buffers follow the tiles");
 
 #endif

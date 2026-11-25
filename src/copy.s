@@ -140,13 +140,8 @@ decode_runs:
     lda #1                  ; the end of the block
     rts
 .Lstart:
-    clc                     ; ADDR0 = dec_map + offset
-    txa
-    adc dec_map
-    sta ADDR0
-    tya
-    adc dec_map+1
-    sta ADDR0+1
+    stx ADDR0               ; the run's XRAM address, as the stream gives it
+    sty ADDR0+1
     ldy RW1                 ; count
     sty count
     copy_y

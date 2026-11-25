@@ -38,7 +38,7 @@
 #define FPS 30
 #define VSYNCS_PER_FRAME 2
 #define AHEAD (BUFFERS - 1) /* frames decoded ahead of the one on screen */
-#define READ_MIN 4096
+#define READ_MIN 1024
 #define READ_MAX 8192
 #define SKIP_SECONDS 10
 #define MAX_SECONDS 256
@@ -261,7 +261,7 @@ static void decode_step(void)
             finish_frame();
             return;
         }
-        run_to = dec_map + (lo | hi << 8);
+        run_to = lo | hi << 8;
         run_left = ring_get();
         to_end = RING_BYTES - (parse & RING_MASK);
     }
@@ -463,7 +463,9 @@ static bool start_at(unsigned second, uint8_t state)
     block = second_at[second].block;
     decoding = false;
     clear_left = 0;
-    front = load;
+    /* The stream puts frame n in buffer n % 2, and a second starts on an
+     * even frame. */
+    front = load = 0;
     ahead = 0;
     next = second * FPS;
     while (!ahead)
@@ -962,7 +964,7 @@ int main(int argc, char *argv[])
     }
     frames_fd = open("ROM:frames", O_RDONLY);
     if (frames_fd < 0 || read(frames_fd, header, HEADER_BYTES) != HEADER_BYTES ||
-        header[0] != 'B' || header[1] != 'A' || header[2] != 'D' || header[3] != '5')
+        header[0] != 'B' || header[1] != 'A' || header[2] != 'D' || header[3] != '6')
     {
         puts("ROM:frames is missing.");
         return 1;
@@ -974,6 +976,12 @@ int main(int argc, char *argv[])
         puts("ROM:index is missing.");
         return 1;
     }
+    /* The stream uploads every tile it shows but tile 0 of each plane,
+     * which stays empty. */
+    RIA.step0 = 1;
+    RIA.addr0 = XRAM_TILES;
+    for (a = 0; a < LAYERS * 256 * 8 / 8; a++)
+        clear_groups(1);
     /* A run is at most 258 bytes, so decode_runs() stops a page short. */
     dec_limit = (XRAM_RING + RING_BYTES - 258) >> 8;
     set_volume();
