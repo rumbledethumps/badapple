@@ -108,7 +108,7 @@ class Screen:
 
 def layout(s):
     s.center(BUTTER, "title", "Bad Apple!!", 76)
-    s.center(WHITE, "small", "for the Picocomputer 6502", 118)
+    s.center(WHITE, "small", "for the Picocomputer 6502", 110)
 
     # Three columns, centered as a block: heading, name, role.
     gap = 28
@@ -117,7 +117,7 @@ def layout(s):
     role_w = max(s.width("small", r) for _, rows in CREDITS for _, r in rows)
     x0 = round((W - (head_w + gap + name_w + gap + role_w)) / 2)
     x_name, x_role = x0 + head_w + gap, x0 + head_w + gap + name_w + gap
-    y = 178
+    y = 170
     for head, rows in CREDITS:
         s.text(LILAC, "head", head, x0, y)
         for name, role in rows:
@@ -126,8 +126,8 @@ def layout(s):
             y += 24
         y += 14
 
-    s.center(BUTTER, "sub", "Click or press Space to play", 352)
-    s.keys(WHITE, "small", KEYS, 380)
+    s.center(BUTTER, "sub", "Click or press Space to play", 344)
+    s.keys(WHITE, "small", KEYS, 372)
 
 
 def to_linear(c):
