@@ -21,7 +21,8 @@
  * keyframes, against cleared maps, and ROM:index, read into RAM, gives
  * each second's place in the file, so the player can start at any second.
  * The 6502 applies the runs, a step per pass of the main loop, while the
- * next read runs. The sound goes from the ring to the PCM device in order.
+ * next read runs. The frame's sound, 4-bit DPCM, is decoded from the ring
+ * into the stage, a step at a time, and goes from there to the PCM device.
  *
  * Two map buffers hold the frame on screen and the next frame, decoding or
  * decoded. A frame is shown by pointing all three layers at its maps, at a
@@ -43,7 +44,6 @@
 #define SKIP_SECONDS 10
 #define MAX_SECONDS 256
 #define KEYFRAME 1 /* a delta block's flag: clear the buffer first */
-#define SCALE_SAMPLES 128 /* samples a step of the volume scaler takes */
 #define IDLE_VSYNCS 180   /* 3 s without input while playing, then the transport fades */
 #define FADE_VSYNCS 6     /* between steps of the fade */
 #define FADE_STEPS 5
@@ -107,15 +107,30 @@ static const uint16_t VOLUME_M[] = {0, 21, 43, 64, 85, 107, 128, 149, 171, 192, 
 #define VOLUME_FULL (sizeof(VOLUME_M) / sizeof(VOLUME_M[0]) - 1)
 static uint8_t volume = VOLUME_FULL;
 static bool muted;
-static bool scaling; /* below full volume, each frame's sound is scaled before it is sent */
-extern uint8_t vol_lo[256], vol_hl[256], vol_hh[256]; /* copy.s */
+static unsigned volume_want; /* VOLUME_M[volume], or 0 muted */
+static unsigned volume_m;    /* the volume the deltas are at, volume_want from a frame's start */
 
-static unsigned sound_len[BUFFERS];   /* bytes of each buffer's sound still to send, 0 when sent */
-static unsigned sound_ready[BUFFERS]; /* bytes of it scaled to the volume, ready to send */
-static unsigned sound_at[BUFFERS];  /* where it starts in the stream */
-static uint8_t sound_play;          /* the buffer whose sound goes to the PCM device */
-static unsigned sound_sent;         /* bytes of its sound already sent */
-static unsigned pcm_asked;          /* bytes the PCM write in flight was given */
+/* The DPCM steps, as src/adpcm.c makes them: 4 * (4095 / 4) ^ (k / 15). */
+static const int STEP[16] = {4, 6, 10, 16, 25, 40, 64, 102, 161, 256, 406, 645, 1024, 1625, 2580, 4095};
+
+/* In copy.s, for decode_pairs(). */
+extern uint8_t acc_ll, acc_lh, acc_rl, acc_rh; /* the last samples decoded */
+extern uint8_t dec_sl, dec_sr;                 /* the block's scales */
+extern uint8_t dtab[64][256];                  /* the deltas at the volume */
+extern uint8_t vlo[16], vhi[16];               /* one scale's deltas, for fill_scale() */
+static uint8_t dtab_built;                     /* scales whose deltas are at the volume */
+
+/* The sound decoder walks the stream on its own, ahead of the video when
+ * the stage has room, so the PCM device never waits on a busy frame. */
+static unsigned sound_frame;       /* the frame whose sound decodes next */
+static unsigned sound_at;          /* where that frame starts in the stream */
+static unsigned sound_block;       /* the length of its delta block */
+static unsigned sound_pos;         /* bytes of its sound decoded, 0 before its start samples */
+static unsigned pairs_left;        /* its pairs still to decode */
+static uint8_t block_left;         /* pairs left in its block */
+static unsigned stage_head;        /* bytes decoded into the stage, counting up */
+static unsigned stage_tail;        /* bytes of them sent to the PCM device */
+static unsigned pcm_asked;         /* bytes the PCM write in flight was given */
 static bool pcm_full;               /* a PCM write filled the device since the last read or VSYNC */
 
 static uint8_t call;
@@ -158,7 +173,8 @@ enum
 void copy_run(uint8_t count);     /* copy.s */
 void clear_groups(uint8_t count); /* copy.s */
 uint8_t decode_runs(void);        /* copy.s */
-void scale_samples(uint8_t count); /* copy.s */
+void decode_pairs(uint8_t count); /* copy.s */
+void fill_scale(uint8_t k);        /* copy.s */
 
 static uint8_t after(uint8_t buffer)
 {
@@ -180,26 +196,28 @@ static void show(uint8_t buffer)
                      maps + layer * MAP_BYTES);
 }
 
-static uint8_t ring_get(void)
+static uint8_t ring_at(unsigned pos)
 {
     RIA.step1 = 1;
-    RIA.addr1 = XRAM_RING + (parse & RING_MASK);
-    ++parse;
+    RIA.addr1 = XRAM_RING + (pos & RING_MASK);
     return RIA.rw1;
 }
 
-/* The oldest byte in the ring still needed: unsent sound, or undecoded. */
+static uint8_t ring_get(void)
+{
+    return ring_at(parse++);
+}
+
+/* The oldest byte in the ring still needed: the start of the frame whose
+ * sound decodes next, or the next byte of video, whichever is older. */
 static unsigned ring_tail(void)
 {
-    /* A frame's sound is released when its decoding starts, so unsent
-     * sound can lie after parse: the tail is the older of the two. */
-    unsigned at = sound_at[sound_play] + sound_sent;
-    return sound_len[sound_play] && (unsigned)(parse - at) < 0x8000 ? at : parse;
+    return (unsigned)(parse - sound_at) < 0x8000 ? sound_at : parse;
 }
 
 static void finish_frame(void)
 {
-    parse += SOUND_BYTES;
+    parse += SOUND_IN;
     block = next_block;
     load = after(load);
     ++ahead;
@@ -217,15 +235,8 @@ static void decode_step(void)
     unsigned to_end, start;
     if (!decoding)
     {
-        if (ahead >= AHEAD || next + ahead >= frames || sound_len[load] ||
-            (unsigned)(head - parse) < block + SOUND_BYTES)
+        if (ahead >= AHEAD || next + ahead >= frames || (unsigned)(head - parse) < block + SOUND_IN)
             return;
-        /* The block and the sound are both in the ring, so the sound can go
-         * to the PCM device while the block is applied: a large block,
-         * like a keyframe's, would otherwise leave the device to run dry. */
-        sound_at[load] = parse + block;
-        sound_len[load] = SOUND_BYTES;
-        sound_ready[load] = scaling ? 0 : SOUND_BYTES;
         lo = ring_get();
         hi = ring_get();
         next_block = lo | hi << 8;
@@ -287,60 +298,114 @@ static void decode_step(void)
     run_left -= n;
 }
 
-/* Sets the volume tables for the step and mute. At full volume nothing is
- * scaled, and sound already waiting goes as it is. */
+/* Sets the volume step and mute. The sound takes the new volume at the
+ * start of the next frame it decodes: a frame's samples are its start
+ * samples plus deltas, so they must all be at one volume, or a sum could
+ * leave 16 bits. */
 static void set_volume(void)
 {
-    unsigned m = muted ? 0 : VOLUME_M[volume], i;
-    int hi;
-    for (i = 0; i < 256; i++)
-    {
-        hi = (int8_t)i * (int)m;
-        vol_lo[i] = (uint8_t)((i * m) >> 8);
-        vol_hl[i] = (uint8_t)hi;
-        vol_hh[i] = (uint8_t)(hi >> 8);
-    }
-    scaling = m != 256;
-    if (!scaling)
-        sound_ready[0] = sound_ready[1] = SOUND_BYTES;
+    volume_want = muted ? 0 : VOLUME_M[volume];
 }
 
-/* One step of the volume scaler: up to SCALE_SAMPLES samples of the oldest
- * sound not yet scaled, in place in the ring. A sample split by the ring's
- * end is scaled here in C. */
-static void scale_step(void)
+/* At a frame's start, takes the volume asked for. The deltas follow, a
+ * scale a pass in the main loop, and the frame waits for them. */
+static void take_volume(void)
 {
-    uint8_t b = sound_play, lo, hi;
-    unsigned pos, left, to_end, n;
+    if (volume_m != volume_want)
+    {
+        volume_m = volume_want;
+        dtab_built = 0;
+    }
+}
+
+/* Fills the four pages of scale k's deltas at the volume, rounded, so at
+ * full volume the sound is exactly as encoded. */
+static void build_scale(uint8_t k)
+{
+    uint8_t c;
+    long step = (long)STEP[k] * volume_m, d = -8 * step + 128;
+    for (c = 0; c < 16; c++, d += step)
+    {
+        vlo[c] = (uint8_t)(d >> 8);
+        vhi[c] = (uint8_t)(d >> 16);
+    }
+    fill_scale(k);
+}
+
+/* A frame's start sample, at the volume. */
+static int start_sample(unsigned pos)
+{
+    int v = ring_at(pos) | ring_at(pos + 1) << 8;
+    return (int)(((long)v * volume_m + 128) >> 8);
+}
+
+/* One step of the sound decoder: the next frame's start samples once all
+ * of it is in the ring, or a block's scales and up to a block of pairs, as
+ * far as the stage has room and the ring and stage go without wrapping.
+ * Returns false when it has nothing to do. */
+static bool sound_step(void)
+{
+    unsigned at, n, room;
+    uint8_t scales;
     int v;
-    if (!sound_len[b] || sound_ready[b] >= SOUND_BYTES)
+    if (sound_frame >= frames)
+        return false;
+    room = STAGE_BYTES - (stage_head - stage_tail);
+    if (!room)
+        return false;
+    at = sound_at + sound_block + sound_pos;
+    if (!sound_pos)
     {
-        b = after(b);
-        if (!sound_len[b] || sound_ready[b] >= SOUND_BYTES)
-            return;
+        take_volume();
+        if (dtab_built < 16 || (unsigned)(head - sound_at) < sound_block + SOUND_IN)
+            return false;
+        v = start_sample(at);
+        acc_ll = v;
+        acc_lh = v >> 8;
+        v = start_sample(at + 2);
+        acc_rl = v;
+        acc_rh = v >> 8;
+        sound_pos = 4;
+        pairs_left = PAIRS;
+        block_left = 0;
+        return true;
     }
-    pos = sound_at[b] + sound_ready[b];
-    left = SOUND_BYTES - sound_ready[b];
-    to_end = RING_BYTES - (pos & RING_MASK);
-    if (to_end == 1)
+    if (!block_left)
     {
-        lo = xram0_peek8(XRAM_RING + RING_MASK);
-        hi = xram0_peek8(XRAM_RING);
-        v = vol_lo[lo] + (vol_hl[hi] | vol_hh[hi] << 8);
-        xram0_poke8(XRAM_RING + RING_MASK, v);
-        xram0_poke8(XRAM_RING, v >> 8);
-        sound_ready[b] += 2;
-        return;
+        scales = ring_at(at++);
+        dec_sl = scales >> 4;
+        dec_sr = scales & 15;
+        ++sound_pos;
+        block_left = pairs_left < SOUND_BLOCK ? pairs_left : SOUND_BLOCK;
     }
-    n = left < to_end ? left : to_end;
-    n /= 2;
-    if (n > SCALE_SAMPLES)
-        n = SCALE_SAMPLES;
+    n = block_left;
+    if (n > room / 4)
+        n = room / 4;
+    room = (STAGE_BYTES - (stage_head & STAGE_MASK)) / 4;
+    if (n > room)
+        n = room;
+    room = RING_BYTES - (at & RING_MASK);
+    if (n > room)
+        n = room;
     RIA.step0 = 1;
+    RIA.addr0 = XRAM_STAGE + (stage_head & STAGE_MASK);
     RIA.step1 = 1;
-    RIA.addr0 = RIA.addr1 = XRAM_RING + (pos & RING_MASK);
-    scale_samples(n);
-    sound_ready[b] += n * 2;
+    RIA.addr1 = XRAM_RING + (at & RING_MASK);
+    decode_pairs(n);
+    stage_head += n * 4;
+    sound_pos += n;
+    block_left -= n;
+    if (!(pairs_left -= n))
+    {
+        /* The next frame starts after this one's sound, and its block's
+         * length is in this one's first two bytes. */
+        n = ring_at(sound_at) | ring_at(sound_at + 1) << 8;
+        sound_at += sound_block + SOUND_IN;
+        sound_block = n;
+        sound_pos = 0;
+        ++sound_frame;
+    }
+    return true;
 }
 
 /* Starts read_xram() or write_xram() without waiting for it. */
@@ -355,23 +420,12 @@ static void start_call(uint8_t kind, uint8_t op, unsigned xaddr, unsigned count,
     call = kind;
 }
 
-/* The part of the playing sound that is in one piece in the ring. */
-static unsigned sound_piece(unsigned *at)
+/* The part of the stage's sound that is in one piece. */
+static unsigned stage_piece(unsigned *at)
 {
-    unsigned start = sound_at[sound_play] + sound_sent, left = sound_ready[sound_play] - sound_sent,
-             to_end = RING_BYTES - (start & RING_MASK);
-    *at = XRAM_RING + (start & RING_MASK);
+    unsigned left = stage_head - stage_tail, to_end = STAGE_BYTES - (stage_tail & STAGE_MASK);
+    *at = XRAM_STAGE + (stage_tail & STAGE_MASK);
     return left < to_end ? left : to_end;
-}
-
-static void sound_done(int n)
-{
-    if (n > 0 && (sound_sent += n) >= sound_len[sound_play])
-    {
-        sound_len[sound_play] = 0;
-        sound_play = after(sound_play);
-        sound_sent = 0;
-    }
 }
 
 static void finish_call(void)
@@ -383,7 +437,8 @@ static void finish_call(void)
         /* A write that takes less than it was given filled the device. */
         if (n < (int)pcm_asked)
             pcm_full = true;
-        sound_done(n);
+        if (n > 0)
+            stage_tail += n;
         break;
     case CALL_READ:
         if (n > 0)
@@ -410,10 +465,9 @@ static void finish_calls(void)
 static void start_next_call(void)
 {
     unsigned at, count, space;
-    if (show_state == SHOW_PLAY && !pcm_full && sound_len[sound_play] &&
-        sound_ready[sound_play] > sound_sent)
+    if (show_state == SHOW_PLAY && !pcm_full && stage_head != stage_tail)
     {
-        pcm_asked = sound_piece(&at);
+        pcm_asked = stage_piece(&at);
         start_call(CALL_PCM, RIA_OP_WRITE_XRAM, at, pcm_asked, pcm_fd);
         return;
     }
@@ -502,8 +556,11 @@ static bool start_at(unsigned second, uint8_t state)
         }
         head += n;
     }
-    sound_len[0] = sound_len[1] = 0;
-    block = second_at[second].block;
+    block = sound_block = second_at[second].block;
+    sound_frame = second * FPS;
+    sound_at = 0;
+    sound_pos = 0;
+    stage_head = stage_tail = 0;
     decoding = false;
     clear_left = 0;
     /* The stream puts frame n in buffer n % 2, and a second starts on an
@@ -513,14 +570,17 @@ static bool start_at(unsigned second, uint8_t state)
     next = second * FPS;
     while (!ahead)
     {
-        if (!decoding && (unsigned)(head - parse) < block + SOUND_BYTES)
+        if (!decoding && (unsigned)(head - parse) < block + SOUND_IN)
             return false;
         decode_step();
     }
     ahead = 0;
     ++next;
-    sound_play = front;
-    sound_sent = 0;
+    take_volume();
+    while (dtab_built < 16)
+        build_scale(dtab_built++);
+    while (sound_step())
+        ;
     pcm_full = false;
     vsync = ria_vsync();
     while (ria_vsync() == vsync)
@@ -581,19 +641,16 @@ static bool end_video(void)
 {
     unsigned at, count;
     finish_calls();
-    while (sound_len[sound_play])
+    while (sound_step() || stage_head != stage_tail)
     {
         int n;
-        if (sound_ready[sound_play] <= sound_sent)
-        {
-            scale_step();
+        if (stage_head == stage_tail)
             continue;
-        }
-        count = sound_piece(&at);
+        count = stage_piece(&at);
         n = write_xram(at, count, pcm_fd);
         if (n < 0)
             break;
-        sound_done(n);
+        stage_tail += n;
     }
     syncfs(pcm_fd);
     return repeat ? start_at(0, SHOW_PLAY) : show_title();
@@ -1014,7 +1071,7 @@ int main(int argc, char *argv[])
     }
     frames_fd = open("ROM:frames", O_RDONLY);
     if (frames_fd < 0 || read(frames_fd, header, HEADER_BYTES) != HEADER_BYTES ||
-        header[0] != 'B' || header[1] != 'A' || header[2] != 'D' || header[3] != '7')
+        header[0] != 'B' || header[1] != 'A' || header[2] != 'D' || header[3] != '8')
     {
         puts("ROM:frames is missing.");
         return 1;
@@ -1036,6 +1093,9 @@ int main(int argc, char *argv[])
     /* A run is at most 258 bytes, so decode_runs() stops a page short. */
     dec_limit = (XRAM_RING + RING_BYTES - 258) >> 8;
     set_volume();
+    volume_m = volume_want;
+    for (; dtab_built < 16; dtab_built++)
+        build_scale(dtab_built);
 
     for (layer = 0; layer < LAYERS; layer++)
     {
@@ -1094,8 +1154,9 @@ int main(int argc, char *argv[])
         if (show_state == SHOW_TITLE)
             continue;
         decode_step();
-        if (scaling)
-            scale_step();
+        sound_step();
+        if (dtab_built < 16)
+            build_scale(dtab_built++);
         if (RIA.busy & 0x80)
             continue;
         if (call != CALL_NONE)

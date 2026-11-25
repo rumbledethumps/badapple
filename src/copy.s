@@ -17,14 +17,24 @@
 ;
 ; clear_groups(count) writes count groups of 8 zeros, 1 to 255, at ADDR0.
 ;
-; scale_samples(count) scales count 16-bit samples, 1 to 255, in place:
-; it reads each through RW1 at ADDR1 and writes it back through RW0 at
-; ADDR0, which the caller points at the same place. With m the volume, of
-; 256, a sample hi:lo becomes hi * m + lo * m / 256, from tables that
-; main.c fills: vol_lo[lo] = lo * m / 256, and vol_hl[hi] and vol_hh[hi]
-; the low and high bytes of hi * m, hi signed. Four samples a pass, about
-; 36 cycles a sample.
-;
+; decode_pairs(count) decodes count pairs of 4-bit DPCM, 1 to 255, from
+; RW1 at ADDR1 to 16-bit stereo samples at RW0, ADDR0. A byte holds the
+; left code in its high 4 bits and the right in its low 4, and each code
+; adds a delta to the channel's last sample. The deltas, at the volume, are
+; in dtab, which main.c fills: for each scale k of 16, four pages indexed by
+; the whole byte, dtab[k] and dtab[16 + k] the low and high bytes of the
+; left delta, dtab[32 + k] and dtab[48 + k] the right's. dec_sl and dec_sr
+; are the block's scales; the call writes their pages into the loop's
+; loads. The last samples live in the operands of the loop's adds: main.c
+; sets them through acc_ll, acc_lh, acc_rl, and acc_rh. About 69 cycles a
+; pair.
+
+; fill_scale(k) fills scale k's four pages of dtab from vlo and vhi, the
+; low and high bytes of its 16 deltas, which main.c sets: in the left
+; pages, byte b holds code b >> 4's delta, in the right pages code b & 15's.
+; The call writes the pages into the stores, which are unrolled, so a byte
+; takes 5 cycles: about 6,000 a scale.
+
 ; Eight bytes a pass in the copy, about 8.6 cycles a byte. The counters
 ; are in RAM: the compiler's own variables fill zero page.
 
@@ -80,43 +90,106 @@ clear_groups:
     bne 1b
     rts
 
-.section .text.scale_samples,"ax",@progbits
-.macro scale_one
-    ldx RW1                 ; lo
-    ldy RW1                 ; hi
+; In .data, not .text, because the loop changes its own operands.
+.section .data.decode_pairs,"aw",@progbits
+.macro channel load_lo, add_lo, load_hi, add_hi
     clc
-    lda vol_lo,x
-    adc vol_hl,y
-    sta RW0
-    lda vol_hh,y
+\load_lo:
+    lda dtab,y
+\add_lo:
     adc #0
+    sta \add_lo+1
+    sta RW0
+\load_hi:
+    lda dtab,y
+\add_hi:
+    adc #0
+    sta \add_hi+1
     sta RW0
 .endm
-.globl scale_samples
-scale_samples:
-    sta count
-    and #3
-    beq 2f
-    sta budget              ; the 1 to 3 samples before the groups of 4
+.globl decode_pairs
+.globl acc_ll
+.globl acc_lh
+.globl acc_rl
+.globl acc_rh
+decode_pairs:
+    tax
+    clc
+    lda dec_sl
+    adc #>dtab
+    sta .Lll+2
+    adc #16
+    sta .Llh+2
+    lda dec_sr
+    adc #>(dtab + 32 * 256)
+    sta .Lrl+2
+    adc #16
+    sta .Lrh+2
 1:
-    scale_one
-    dec budget
+    ldy RW1
+    channel .Lll, .Lal, .Llh, .Lah
+    channel .Lrl, .Lar, .Lrh, .Larh
+    dex
     bne 1b
+    rts
+acc_ll = .Lal + 1
+acc_lh = .Lah + 1
+acc_rl = .Lar + 1
+acc_rh = .Larh + 1
+
+; In .data, not .text, because the call writes its own operands.
+.section .data.fill_scale,"aw",@progbits
+.globl fill_scale
+.globl vlo
+.globl vhi
+fill_scale:
+    clc
+    adc #>dtab
+.irp i, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+    sta .Lsl\i+2
+.endr
+    adc #16
+.irp i, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+    sta .Lsh\i+2
+.endr
+    adc #16
+.irp i, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+    sta .Lsr\i+2
+.endr
+    adc #16
+.irp i, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+    sta .Lsq\i+2
+.endr
+    ldx #15
+1:
+    txa                     ; y = 16 * code, the code's run in the left pages
+    asl
+    asl
+    asl
+    asl
+    tay
+    lda vlo,x
+.irp i, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+.Lsl\i:
+    sta dtab+\i,y
+.endr
+.irp i, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+.Lsr\i:
+    sta dtab+16*\i,x
+.endr
+    lda vhi,x
+.irp i, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+.Lsh\i:
+    sta dtab+\i,y
+.endr
+.irp i, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+.Lsq\i:
+    sta dtab+16*\i,x
+.endr
+    dex
+    bmi 2f
+    jmp 1b
 2:
-    lda count
-    lsr
-    lsr
-    beq 4f
-    sta count
-3:
-    scale_one
-    scale_one
-    scale_one
-    scale_one
-    dec count
-    beq 4f
-    jmp 3b
-4:
     rts
 
 .section .text.decode_runs,"ax",@progbits
@@ -167,15 +240,21 @@ budget:
 count:
     .zero 1
 
+.section .bss.decode_pairs,"aw",@nobits
+.globl dec_sl
+.globl dec_sr
+dec_sl:
+    .zero 1
+dec_sr:
+    .zero 1
+vlo:
+    .zero 16
+vhi:
+    .zero 16
+
 ; Page-aligned, so the indexed loads never cross a page.
-.section .bss.volume,"aw",@nobits
+.section .bss.dtab,"aw",@nobits
 .balign 256
-.globl vol_lo
-.globl vol_hl
-.globl vol_hh
-vol_lo:
-    .zero 256
-vol_hl:
-    .zero 256
-vol_hh:
-    .zero 256
+.globl dtab
+dtab:
+    .zero 64 * 256

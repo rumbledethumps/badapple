@@ -94,13 +94,13 @@ before it, so a frame's maps are only the runs that change it.
 `src/encode_exact.py` writes these, and packs them into
 `src/badapple.tar.xz` for the build:
 
-- `frames.bin`: a 16-byte header (`BAD7`, the frame count, the first
+- `frames.bin`: a 16-byte header (`BAD8`, the frame count, the first
   source frame, the frame rate, and the length of frame 0's block), then
-  for each frame its block and its sound, 4,108 bytes, as described under
-  [The audio](#the-audio). A block is the length of the next block, a flag
+  for each frame its block and its sound, 1,064 bytes of 4-bit DPCM, as
+  described under [The audio](#the-audio). A block is the length of the next block, a flag
   byte, then writes of a 2-byte address, a count of 1 to 255, and that
   many bytes, joining writes up to four bytes apart, then FF FF. Blocks
-  average 2,705 bytes; `frames.bin` is 44.8 MB. The ROM carries it as
+  average 2,705 bytes; `frames.bin` is 24.8 MB. The ROM carries it as
   `ROM:frames`.
 - `seek.bin`: for each second, what the stream expects in XRAM when that
   second starts, every tile slot and both map buffers, in parts of up to
@@ -114,7 +114,7 @@ before it, so a frame's maps are only the runs that change it.
   `src/transport.py`. The ROM loads it into XRAM before the program
   starts.
 
-The archive is 36.5 MB, and Git keeps it, so the build needs no source
+The archive is 16.4 MB, and Git keeps it, so the build needs no source
 video and no encoder. After writing the files, the encoder plays the
 stream back into a model of XRAM, from the start and from every second's
 seek record, and checks every frame. `src/encode.py`, the earlier
@@ -132,8 +132,7 @@ helpers that `src/encode_exact.py` shares.
 - **A stream ring.** `read_xram()` reads the file into a 16 KB ring in
   XRAM, 1 to 8 KB a read, whenever the ring has room.
 - **Decoding in the 6502.** Once a frame's block and sound are both in
-  the ring, the frame's sound goes to the PCM device, and the 6502 does
-  the block's writes, at the addresses it gives: `src/copy.s` reads the
+  the ring, the 6502 does the block's writes, at the addresses it gives: `src/copy.s` reads the
   ring through portal 1 and writes through portal 0, eight bytes a pass,
   about 8.6 cycles a byte. It stops after about 256 bytes, so the main
   loop can check VSYNC between steps. Near the end of the ring, where a
@@ -154,12 +153,21 @@ helpers that `src/encode_exact.py` shares.
 - **Catching up.** A frame that is not decoded by its VSYNC shows at the
   next one, and the frame after it one VSYNC sooner, so the video catches
   up instead of stretching.
-- **Sound.** `write_xram()` sends each frame's sound from the ring to the
-  PCM device, in order, so the samples never pass through 6502 RAM.
-- **Volume.** Below full volume, `src/copy.s` scales each frame's sound in
-  place in the ring before it is sent, about 36 cycles a sample, from
-  tables in 6502 RAM: twelve even steps of the level, as a web video
-  player's slider has, so the middle is half, -6 dB; and mute.
+- **Sound.** A second decoder walks the stream on its own, a frame's
+  sound at a time, as soon as the frame is all in the ring, so a busy
+  video frame never holds the sound back. `src/copy.s` decodes the 4-bit
+  DPCM through the portals, from the ring into the stage, a 4 KB ring of
+  16-bit samples in XRAM, about 69 cycles a stereo pair, 71,000 a frame;
+  `write_xram()` sends the stage to the PCM device. Each code byte indexes
+  tables in 6502 RAM, 16 KB, that give both channels' deltas; the loop
+  keeps its running samples in its own operands.
+- **Volume.** The tables hold the deltas at the volume, so turning it
+  down costs nothing while playing: twelve even steps of the level, as a
+  web video player's slider has, so the middle is half, -6 dB; and mute.
+  A change takes effect at the start of the next frame's sound, where the
+  samples start again from the frame's start samples, so they stay in 16
+  bits; filling the tables takes about 100,000 cycles, a scale a pass of
+  the main loop.
 - **No waiting on calls.** The player starts each API call itself, through
   the RIA registers, and goes on with its loop, decoding and watching
   VSYNC, while the call runs. When `RIA.busy` clears, it takes the result
@@ -218,7 +226,7 @@ the keyboard, tablet, and gamepad; and the configurations and palettes.
 ## The audio
 
 The soundtrack is the audio of the same Niconico upload: AAC-LC, 44.1 kHz,
-stereo, about 113 kbps. The player plays it as raw PCM at **30,810 Hz,
+stereo, about 113 kbps. The player plays it at **30,810 Hz,
 stereo, 16 bits**.
 
 - **It is real stereo.** The two channels differ in 98% of samples and
@@ -240,9 +248,30 @@ stereo, 16 bits**.
   +2.05 dBFS, so the encoder lowers it 2.5 dB, and no sample clips. ffmpeg
   resamples it with soxr and dithers it to 16 bits.
 
-At 30,810 Hz, stereo, and 16 bits, the soundtrack is 123,240 bytes per
-second and 27.0 MB for its 219 seconds. With the delta blocks, the player
-reads about 160,000 bytes per second.
+At 30,810 Hz, stereo, and 16 bits, the soundtrack would be 123,240 bytes
+per second, 27.0 MB for its 219 seconds. The stream carries it as 4-bit
+DPCM, which the 6502 decodes with a table lookup and a 16-bit add a
+sample:
+
+- **The format.** Each frame's sound is 1,064 bytes: the left and right
+  samples it starts from, 16 bits each, then 33 blocks of 32 pairs, the
+  last of 3. A block is a byte of the two channels' scales, 4 bits each,
+  then a byte a pair, the left code in the high 4 bits. A sample is the
+  one before it plus (code - 8) times the scale's step, 16 steps from 4 to
+  4,095, evenly spaced in decibels. The encoder never lets a sum leave 16
+  bits, so the decoder needs no clamp. 31,920 bytes per second, a quarter
+  of the PCM, and 7.0 MB in all.
+- **The encoder.** `src/adpcm.c`, which `src/encode_exact.py` compiles and
+  runs, picks each block's scale and codes together: the two scales that
+  do best on a quick greedy pass are tried with a trellis that keeps 16
+  paths.
+- **The noise.** The error is about 30 dB under the music, a hiss spread
+  evenly over frequency, so it is lowest against the music's strong bass
+  and highest against the quiet treble. `--shaping` feeds the error back
+  to move the noise out of the treble, but it lands at 1 to 4 kHz, where
+  the ear is most sensitive, so the default is 0.
+
+With the delta blocks, the player reads about 113,000 bytes per second.
 
 ## Building
 
@@ -255,7 +284,7 @@ cmake --build --preset llvm-mos/Release
 ```
 
 The build unpacks `src/badapple.tar.xz` into the build folder, and writes
-the 48 MB ROM to `build/llvm-mos/release/badapple/badapple.rp6502`.
+the 28 MB ROM to `build/llvm-mos/release/badapple/badapple.rp6502`.
 
 ### Encoding the video
 
@@ -274,7 +303,8 @@ yt-dlp -f "video-h264-360p-1+audio-aac-128kbps" -o "data/sm8628149-512x384.%(ext
 python3 src/encode_exact.py data/sm8628149-512x384.mp4
 ```
 
-The whole video encodes in about three minutes, plus the playback check.
+The whole video encodes in about six and a half minutes, half of it the
+sound, plus the playback check.
 The encoder writes `src/badapple.tar.xz`, and
 the same video and settings give the same archive, byte for byte, so Git
 sees a change only when the encoding changes.
@@ -297,7 +327,7 @@ the other options.
   `rp6502-emu badapple.rp6502 -- play repeat`; for the web player, in
   `args` of `rp6502_web()` in `CMakeLists.txt`.
 - **Web player.** The build also writes the web player to
-  `build/llvm-mos/release/web/badapple/`, with the 48 MB ROM. The
+  `build/llvm-mos/release/web/badapple/`, with the 28 MB ROM. The
   RP6502-WEB launch configuration serves it and opens it in a browser.
 - **Test.** `ctest --test-dir build/llvm-mos/release` runs the `play`
   test: two seconds in the emulator, which passes when the player finds

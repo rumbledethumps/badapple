@@ -27,9 +27,9 @@ Every write in the stream is to an XRAM address: the tiles at 0, the two map
 buffers from 6144, frame n in buffer n % 2. The player does what the stream
 says.
 
-frames.bin   16-byte header ("BAD7", frame count, first source frame, fps,
+frames.bin   16-byte header ("BAD8", frame count, first source frame, fps,
              length of frame 0's block), then per frame its block and its
-             sound. A block: the next block's length (2 bytes), flags (1
+             sound, SOUND_IN bytes of 4-bit DPCM from src/adpcm.c. A block: the next block's length (2 bytes), flags (1
              byte, 0), then writes of an XRAM address (2 bytes), a count (1
              to 255), and that many bytes, then FF FF.
 seek.bin     for each second, a seek record: what the stream expects to be
@@ -47,7 +47,9 @@ usage: encode_exact.py video [--seconds N] [--start S] [--out DIR] [--archive A]
 import argparse
 import os
 import struct
+import subprocess
 import sys
+import tempfile
 import time
 
 import numpy as np
@@ -69,6 +71,8 @@ TARGET = 60000  # cycles
 AHEAD = 90
 CLEAR_BOTH = 1
 SEEK_PART = 8192  # a seek record is read and applied in parts of up to this
+PAIRS = E.SOUND_BYTES // E.AUDIO_FRAME  # 1,027 sample pairs a frame
+SOUND_IN = 4 + (PAIRS + 31) // 32 + PAIRS  # 1,064 bytes of DPCM a frame
 XRAM_TILES = 0
 XRAM_MAPS = LAYERS * 256 * TILE
 FRAME_BYTES = LAYERS * CELLS
@@ -326,6 +330,17 @@ def plan_stream(frames, gap, target, ahead, heavy):
     return blocks, seeks, costs, uploaded, early
 
 
+def encode_sound(audio, shaping, paths):
+    """The soundtrack as 4-bit DPCM, SOUND_IN bytes a frame, by src/adpcm.c."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    with tempfile.TemporaryDirectory() as tmp:
+        exe = os.path.join(tmp, "adpcm")
+        subprocess.run(["cc", "-O2", "-o", exe, os.path.join(here, "adpcm.c"), "-lm"], check=True)
+        out = subprocess.run([exe, str(shaping), str(paths)], input=audio, capture_output=True, check=True).stdout
+    assert len(out) == len(audio) // E.SOUND_BYTES * SOUND_IN
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("video")
@@ -344,6 +359,8 @@ def main():
     ap.add_argument("--gap", type=int, default=4, help="unchanged bytes a run carries rather than start another")
     ap.add_argument("--target", type=int, default=TARGET, help="6502 cycles a frame to fill with uploads ahead")
     ap.add_argument("--ahead", type=int, default=AHEAD, help="frames ahead to upload for")
+    ap.add_argument("--shaping", type=float, default=0, help="the sound's error fed back; below 0 moves hiss down from the treble")
+    ap.add_argument("--paths", type=int, default=16, help="paths the sound encoder's trellis keeps")
     ap.add_argument("--no-check", action="store_true")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
@@ -373,14 +390,14 @@ def main():
     blocks, seeks, costs, uploaded, early = plan_stream(frames, args.gap, args.target, args.ahead, heavy)
     encode_seconds = time.time() - t0
 
-    audio = E.read_audio(args.video, first, count)
+    sound = encode_sound(E.read_audio(args.video, first, count), args.shaping, args.paths)
     lengths = [3 + len(b) + len(END) for b in blocks] + [0]
     offsets = []
     with open(os.path.join(args.out, "frames.bin"), "wb") as f:
-        f.write(b"BAD7" + struct.pack("<HHBH", count, first, E.FPS, lengths[0]) + bytes(5))
+        f.write(b"BAD8" + struct.pack("<HHBH", count, first, E.FPS, lengths[0]) + bytes(5))
         for i, b in enumerate(blocks):
             offsets.append(f.tell())
-            f.write(struct.pack("<HB", lengths[i + 1], 0) + b + END + E.frame_audio(audio, i))
+            f.write(struct.pack("<HB", lengths[i + 1], 0) + b + END + sound[i * SOUND_IN:(i + 1) * SOUND_IN])
     seek_at = []
     with open(os.path.join(args.out, "seek.bin"), "wb") as f:
         for r in seeks:
@@ -426,7 +443,7 @@ def main():
             want = np.array([tile_bytes(k) for k in frames[i].tolist()], dtype="S8")
             want = np.frombuffer(want.tobytes(), np.uint8).reshape(CELLS, TILE)
             assert np.array_equal(got, want), f"frame {i} differs, started at {second} s"
-            at += length + E.SOUND_BYTES
+            at += length + SOUND_IN
             length = next_len
 
     if not args.no_check:

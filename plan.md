@@ -878,3 +878,26 @@ starts the video. The README's screenshot then shows the title screen.
   lowered, where the volume scaler costs about 74,000 cycles a frame.
 - The emulator's windowed audio still skips while the player keeps the PCM
   device fed; that is for the emulator.
+
+## Step 8: compressed sound
+
+- The sound is 4-bit block DPCM, from `src/adpcm.c`: per frame, start
+  samples and 33 blocks of a scale byte and a code byte a pair. 1,064
+  bytes a frame instead of 4,108; `frames.bin` falls from 44.8 MB to
+  24.8 MB, the archive from 36.5 MB to 16.4 MB. About 30 dB SNR. Trellis
+  search gains 0.4 dB over greedy; noise shaping moves hiss from the
+  treble to 1 to 4 kHz, so it is off.
+- The 6502 decodes it in `src/copy.s`: a code byte indexes whole-byte
+  tables, 16 KB, for both channels' deltas at the volume, and the loop
+  keeps the running samples in its own operands. 69 cycles a pair,
+  71,000 a frame. The separate volume scaler is gone.
+- The sound decoder walks the stream on its own, into a 4 KB stage in
+  XRAM; waiting on the video decoder, it ran dry at 0:51.
+- A volume change takes effect at the next frame's start: changed
+  mid-frame, a running sample could leave 16 bits. The tables refill in
+  about 100,000 cycles, in assembly.
+- Results in the emulator, the whole video: at 8 MHz, no late frame and
+  no gap in the sound, at full volume and lowered; the decoded samples
+  match a reference decode byte for byte. At 7.5 MHz three gaps of about
+  12 ms (1:03, 1:55); at 7 MHz a few late frames and short gaps. The
+  last commit held to about 5 MHz.

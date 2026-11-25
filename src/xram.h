@@ -150,7 +150,11 @@ typedef struct
  *
  * ROM:frames streams into a ring: per frame a delta block, the runs that
  * turn the maps of two frames back into this frame's, then the frame's
- * sound, 1,027 samples of 30,810 Hz 16-bit stereo.
+ * sound, 1,027 pairs of 30,810 Hz stereo in 4-bit DPCM, SOUND_IN bytes:
+ * the left and right samples it starts from, 16 bits each, then blocks of
+ * 32 pairs, the last of 3, each a byte of the two channels' scales and a
+ * byte a pair of their codes. The 6502 decodes it into the stage, a ring
+ * of 16-bit samples that the PCM device is fed from.
  *
  * The title screen, ROM:title, is one 4-bit map on plane 0, in bands of
  * scanlines with 256 tiles each. While it shows, its tiles and map take
@@ -161,7 +165,11 @@ typedef struct
 #define MAP_BYTES (MAP_COLS * MAP_ROWS)
 #define LAYERS 3
 #define FRAME_BYTES (LAYERS * MAP_BYTES)
-#define SOUND_BYTES 4108
+#define PAIRS 1027 /* stereo sample pairs a frame */
+#define SOUND_BLOCK 32
+#define SOUND_IN (4 + (PAIRS + SOUND_BLOCK - 1) / SOUND_BLOCK + PAIRS) /* 1,064 */
+#define STAGE_BYTES 4096
+#define STAGE_MASK (STAGE_BYTES - 1)
 #define BUFFERS 2
 #define RING_BYTES 16384
 #define RING_MASK (RING_BYTES - 1)
@@ -189,6 +197,7 @@ typedef struct
             uint8_t map[MAP_BYTES];
         } title;
     } area;
+    uint8_t stage[STAGE_BYTES];                /* decoded sound, for the PCM device */
     mode2_config_t config[LAYERS];             /* [layer] */
     mode2_config_t title_config[TITLE_BANDS];  /* [band] */
     uint16_t palette[LAYERS][2];               /* [layer][color] */
@@ -212,6 +221,7 @@ _Static_assert(sizeof(xram_layout_t) <= 0x10000, "the layout fits in 64 KB of XR
 #define XRAM_GAMEPAD offsetof(xram_layout_t, gamepad)
 #define XRAM_TRANSPORT offsetof(xram_layout_t, transport)
 #define XRAM_SPRITES offsetof(xram_layout_t, sprites)
+#define XRAM_STAGE offsetof(xram_layout_t, stage)
 #define XRAM_MAPS offsetof(xram_layout_t, area.video.maps)
 #define XRAM_RING offsetof(xram_layout_t, area.video.ring)
 #define XRAM_TITLE_TILES offsetof(xram_layout_t, area.title.tiles)
