@@ -516,3 +516,413 @@ Measured over 10 s, with the 32 kHz encoding before the last change:
 | Overall | 418 kB/s, 416 kB/s needed |
 | Frames loaded ahead at each frame change | two 240 times, one 60 times, none 0 |
 | Fewest bytes in the PCM device | 360, 2.8 ms of sound |
+
+## Step 5: compressed maps
+
+The firmware now reads over 1 MB/s, and two buffers are enough (step 4's
+three-plane test, then a 10-second double-buffered ROM on an RP6502-PICO).
+The ROM is 122 MB, and 95 MB of it is maps that barely change. This step
+sends only the map bytes that change, decoded by the 6502. The RIA does
+nothing new. The sound stays raw.
+
+### Measured
+
+On the current encoding, comparing each frame's three maps with the frame
+two before it, the one its buffer last held:
+
+| | Bytes |
+|---|---|
+| Changed map bytes per frame | 555 mean, 4,963 max, of 14,400 |
+| Delta block per frame, format below | 1,118 mean, 3,219 at the 99th percentile, 5,585 max |
+| All delta blocks | 7.4 MB, against 94.7 MB of maps |
+| ROM | about 35 MB: 7.4 MB of maps, 27.0 MB of sound |
+| Read rate | about 157 kB/s, against 555 kB/s |
+
+### Format
+
+`frames.bin`, `BAD4`: the header gives frame 0's delta length. Then per
+frame, the delta block, then the 4,108 bytes of sound.
+
+- **Delta block:** the length of the next frame's delta block (2 bytes),
+  then runs, then a 0. A run is a map offset, 0 to 14,399 across the three
+  maps (2 bytes), a count of 1 to 255, and that many tile IDs. A gap of
+  four bytes or fewer between changes goes in the run as literals.
+- **Deltas against two frames back,** the frame the buffer last held.
+  Frames 0 and 1 are against all zeros, and each pass starts with both map
+  buffers cleared.
+
+### XRAM, using only what it needs
+
+| | Bytes |
+|---|---|
+| Tiles, 3 planes | 6,144 |
+| Config and palettes | 60 |
+| Map buffers, 2 x 14,400 | 28,800 |
+| Stream ring, deltas and sound | 16,384 |
+| Total | 51,388 |
+| Free for the transport bar, pointer, and index | about 14 KB |
+
+### Player
+
+- **Large reads.** A frame now averages about 5.2 KB, deltas and sound,
+  too small for one read each: every call has a fixed cost, and reads
+  stop gaining much between 8 and 16 KB. So the file streams into a
+  16 KB ring in XRAM, 8 KB a read, whenever 8 KB of the ring is free.
+  That is a read about every 1.5 frames, about 8 ms each on an
+  RP6502-PICO.
+- **Parsing the ring.** The 6502 reads each frame's delta block from the
+  ring through `RW1`, and its sound goes to the PCM device straight from
+  the ring with `write_xram()`, in two writes where it wraps. Ring space
+  is free again once a frame's delta is applied and its sound sent.
+- **The 6502 applies the delta** into the back map buffer: for each run,
+  set `ADDR0` to the map offset, then copy count bytes from the ring
+  (`RW1`) to the map (`RW0`), about 13 cycles a byte. A frame averages
+  about 2 ms of this and about 9 ms at worst.
+- **The copy never holds up VSYNC.** The main loop applies one run, or at
+  most about 256 bytes, per pass, and checks VSYNC every pass, so a flip
+  still lands in the 1.37 ms window.
+- **A frame flips at its VSYNC once its delta is applied,** as now. A late
+  frame shows at the next VSYNC.
+- **Everything else stays:** the PCM top-up before every read and at every
+  VSYNC, the static VSYNC count, and the sync at the start of each pass.
+
+### Tests
+
+- The encoder applies every delta block to two simulated buffers and
+  checks that each frame comes out as encoded.
+- The emulator's short `play` test, then a screenshot at frame 357.
+- A 10-second ROM on the hardware, then the whole video in the emulator.
+
+### Later
+
+The transport bar and pointer are planned as sprites on plane 2, with a
+tablet. Each plane has a sprite layer drawn over its fill layer, so they
+go over the edge tiles with no change to them. The free XRAM above is
+meant for them and for an index asset of frame positions.
+
+### Results
+
+- The stream format is `BAD4`, as planned. The delta blocks are 7.4 MB,
+  averaging 1,126 bytes a frame, 5,647 at most, and `frames.bin` is
+  34.4 MB. The encoder plays the stream back and checks every frame.
+- The run loop is in assembly, `src/copy.s`: unrolled by eight, counters
+  in zero page, and the stream position read back from ADDR1 once per
+  call, with no per-run 16-bit sums. A first version in C decoded every
+  frame exactly but fell 220 frames behind in 4,000 VSYNCs.
+- In the emulator, screenshots after 716, 4,000, 12,000 and 12,600 VSYNCs
+  each match the encoder's frame pixel for pixel, 3 frames after VSYNC / 2,
+  the start-up time. Sound recorded at the start and at the spinning
+  yin-yang keeps one alignment, second by second, with no dropouts.
+- Late frames over the whole video, counted with a temporary probe: none
+  at 8 MHz, none at 4 MHz, 19 at 3 MHz, 5,053 at 2 MHz. The decoder has
+  at least twice the CPU it needs.
+- A 10-second ROM played cleanly on an RP6502-PICO, and then the whole
+  video did.
+
+## Step 6: transport
+
+A transport bar over the video: play and pause, back and forward 10
+seconds, scrubbing, repeat, and volume, driven by the tablet interface
+(mouse, pen, or touch) and by a gamepad. It fades out after a few seconds
+without input, and comes back on any movement or button.
+
+### Seeking: keyframes and an index
+
+Every frame is a delta against the frame two before it, so playback can
+only start where both map buffers are known. Today that is only frame 0.
+
+- **Keyframes.** At the start of every second, frames 30n and 30n+1 are
+  coded against cleared maps, and their delta blocks carry a flag. Before
+  applying a flagged block, the player clears that map buffer, 14,400
+  bytes, in assembly, about 8 ms. In plain playback that happens twice a
+  second. Measured on the current encoding, keyframe blocks average 2,724
+  bytes, 5,375 at most, and add 0.71 MB to the 34.4 MB stream.
+- **The index,** a second ROM asset, `ROM:index`: for each second, the
+  file offset of its keyframe (4 bytes) and the length of its delta block
+  (2 bytes). 220 seconds make 1.3 KB, loaded into 6502 RAM at start, so a
+  seek costs no read of its own.
+- **A seek:** empty the PCM device (`lseek` with `SEEK_SET`), `lseek` the
+  stream to the keyframe, refill the ring, decode the keyframe pair, and
+  go on. About 40 ms, so scrubbing can show 20 or more seconds a second.
+- **Scrubbing** shows the keyframe of each second the playhead crosses,
+  with no sound, and plays from the second it is let go at.
+
+### Volume
+
+The docs give the PCM device no volume control, so the 6502 scales the
+sound in the ring before it is sent. A second assembly routine reads each 16-bit
+sample through portal 1, looks up `hi * v` (16 bits) and `lo * v / 256` in
+tables in 6502 RAM, 768 bytes rebuilt when the volume changes, and writes
+the sum back through portal 0 in place. About 35 cycles a sample, 72,000
+a frame, 27% of the 6502. It runs in steps of about 256 bytes, like the
+decoder, and PCM writes never pass the scaled part. At full volume it is
+skipped. Sixteen steps; the decoder's worst frames use under half the
+6502, so the two fit, and the emulator at lower clock speeds will show the
+margin.
+
+### The bar
+
+- **Sprites** on plane 2's sprite layer, over the video: mode 5 custom
+  sprites, 4-bit color, at full resolution, with smooth edges.
+- **Parts:** the bar's background, the track, the progress fill, the
+  playhead, buttons for back 10 s, play or pause, forward 10 s, and
+  repeat, a time readout (1:23 / 3:39) from digit sprites, a volume icon
+  and slider, and the pointer.
+- **XRAM:** under 10 KB of the 14 KB free, art and sprite array together.
+  The bar's scanlines cost about 400 of the VGA's 1,600 clocks at 640
+  wide.
+- **The fade** is done with the palettes. Alpha is one bit, so a color
+  cannot go half transparent. Instead each pixel of the art carries a rank
+  from an ordered-dither pattern as well as its color, and the palette
+  has an entry for each color and rank. Fading out turns the ranks
+  transparent one at a time, so the bar dissolves in a few steps, over
+  about half a second. With 4-bit color, each part's palette holds 3
+  tones, its gel, the charcoal, and one between them for the smooth
+  edges, in 5 ranks, plus transparent.
+- **Colors:** pastels on the black and white, like light through colored
+  paper.
+
+### The design: gel discs
+
+Chosen from four studies. There is no bar behind the controls: each one is
+its own disc of pastel "stage gel" with a charcoal rim and icon, and the
+track is a thin charcoal-edged line between them.
+
+- **Discs, left to right:** back 10 s (sky), play or pause (butter),
+  forward 10 s (sky), then the track, then repeat (mint) and the speaker
+  (lilac), with a short volume slider after it.
+- **The track:** charcoal edge, lilac inside, peach where it has played,
+  and a peach playhead. The time rides above the playhead in a small
+  butter pill.
+- **Colors:** peach F4C6B4, butter F2E2A4, mint BCE2CF, sky BCD5ED, lilac
+  D4C7EB, and charcoal 3D3A42. Each disc has its own palette, its gel and
+  the charcoal, so a 4-bit palette holds its colors at full dissolve
+  steps.
+- **XRAM:** about 4 KB at full resolution: five 32x32 discs, track and
+  fill pieces that repeat, the digits, and the pointer.
+- **The pointer** is charcoal with a butter fill.
+
+### Fading
+
+- The bar and the pointer dissolve out together, in the pixelated steps
+  of the palettes, after 3 seconds without input while playing.
+- They come back at once, with no dissolve in, so the pointer is under
+  control the moment it moves. The input that brings them back also
+  does what it asks.
+- They stay while paused.
+
+### Controls
+
+| | Tablet (mouse, pen, touch) | Gamepad |
+|---|---|---|
+| Play, pause | the play button | A (south) |
+| Back, forward 10 s | the buttons | d-pad left, right |
+| Scrub | drag the playhead or click the track | hold a shoulder button, or the left stick |
+| Repeat | the repeat button | Y (north) |
+| Volume | drag the slider | d-pad up, down |
+| Mute | the speaker | X (west) |
+| Show the bar | move the pointer | any button, which also does what it asks |
+
+- The bar and pointer fade after 3 seconds without input while playing,
+  and stay while paused.
+- At start the player shows the title screen, below, with the bar, and
+  waits. Repeat is off and the volume is full.
+- At the end, with repeat off, the title screen comes back. With repeat
+  on, the video loops as now and the title screen never shows.
+- The speaker mutes and unmutes, and the slider sets the volume.
+
+### Keyboard
+
+| | Keys |
+|---|---|
+| Play, pause | Space |
+| Back, forward 10 s | left, right arrows |
+| Volume | up, down arrows |
+| Mute | M |
+| Repeat | R |
+
+### The title screen
+
+Shown at the very start, paused before frame 0, which is also where the
+video returns when it ends with repeat off; always with the transport
+over it. A paused video shows its frame, not the title.
+
+- **A lazy start.** On the title, a click or tap anywhere above the
+  transport starts the video. Someone on a touchscreen can tap the
+  middle. Keys and buttons only do their transport actions.
+- **Transport actions do what they say.** A click on the transport, or a
+  mapped key or button, acts as it would during the video: forward 10 s,
+  for one, leaves the title and pauses at 0:10.
+- **The end.** The source already ends with 58 black frames, 1.9 s, so
+  the title comes back after a natural pause, with nothing added.
+
+```
+                    Bad Apple!!
+              for the Picocomputer 6502
+
+  MUSIC   ZUN                  composer, "Bad Apple!!", 1998
+          Masayoshi Minoshima  arrangement, 2007
+          nomico               vocals
+          Haruka               lyrics
+
+  VIDEO   Μμ                   storyboard, 2008
+          Anira and team       shadow-art animation, 2009
+
+           Click or press Space to play
+  Space play · ◀▶ 10 seconds · ▲▼ volume · M mute · R repeat
+```
+
+- **Type:** Shippori Mincho, from four studies, antialiased, at full
+  resolution; Greek in Noto Serif, which Mincho lacks. `src/title.py`
+  renders it.
+- **Colors:** 4-bit tiles on plane 0: black, and white, butter, and lilac
+  in five steps each from black, blended in linear light. White for the
+  names, the Picocomputer line, and the keys; butter for the title, feat.
+  nomico, and the prompt; lilac for the headings and roles.
+- **Layout:** the text stops at line 396, above the transport, which
+  always shows; the roles sit in a column clear of the longest name.
+- **Tiles:** about 800 distinct tiles, so plane 0 runs in four bands of
+  scanlines, each a mode 2 layer with 256 tiles of its own, all reading
+  one map. 32 KB of tiles and the 4,800-byte map, `title.bin`, a ROM
+  asset, read into the video's map buffers and ring, which the title does
+  not use. Planes 1 and 2 are moved off the canvas. Starting the video
+  reloads the video's tiles from the ROM and sets the three planes back.
+
+### The web player
+
+The ROM has its own play button now, so the web player no longer needs
+one of its own. `rp6502_web()` in `CMakeLists.txt` drops `autoplay:
+'off'`, for the default `on`, and sets `overlay: false`: the ROM starts
+when the page loads and shows the title screen with its transport. The
+browser allows sound at the first click on the player, the click that
+starts the video. The README's screenshot then shows the title screen.
+
+### XRAM
+
+| | Bytes |
+|---|---|
+| Now: tiles, maps, ring | 51,388 |
+| Tablet and gamepad state | about 100 |
+| Transport art, palettes, sprite array | under 10,000 |
+| Free | about 4,000 or more |
+
+### Order of work
+
+1. Keyframes, the index, and seeking, tested with keys in the emulator's
+   script before there is a bar.
+2. Volume scaling, and the emulator at lower clock speeds for the CPU
+   margin.
+3. The bar's art and sprites, from the chosen design, and the fade.
+4. Tablet and gamepad input.
+5. A short sample on the hardware.
+
+### Results
+
+- The encoder writes keyframes, `index.bin`, `title.bin`, and
+  `transport.bin`. Keyframes add 0.7 MB; `frames.bin` is 35.1 MB.
+- In the emulator, with the keyboard, the tablet, and a gamepad driven by
+  its script: the title screen, a lazy start from a click, play and
+  pause, 10-second skips, a click on the track, the
+  volume slider, repeat, mute, the end back to the title or, with repeat
+  on, a second pass, the dissolve after 3 seconds, the pointer leaving the
+  canvas, and the transport coming back at once.
+- The volume scaler halves the level exactly at -6 dB, checked against the
+  stream.
+- Late frames over the whole video, volume lowered, transport drawn: none
+  at 8 MHz, 3 at 6 MHz. Drawing only what changed in the transport, and
+  unrolling the scaler by four, bought that margin.
+
+### Adjustments
+
+- The title drops "feat. nomico", who is credited under MUSIC; it reads
+  "Bad Apple!!", then "for the Picocomputer 6502".
+- The keys line draws its arrows as solid triangles; Mincho's arrows were
+  hairlines. The prompt reads "Click or press Space to play".
+- The discs had light pixels outside their charcoal rims, which sparkled
+  on black: Pillow scales RGBA with the alpha premultiplied and returns
+  straight colors, which `src/transport.py` divided by the alpha again.
+- The pointer the transport draws is a black and white desktop arrow.
+- A click or tap on the video, above the top of the time label, plays and
+  pauses it, and starts it from the title screen; a click on the
+  transport does only what it hits. Keys and buttons do only their
+  transport actions.
+- The volume steps are even in level, as a web video player's are, so
+  the middle of the slider is -6 dB. In steps of 3 dB the middle was
+  -18 dB, which sounded far too quiet.
+- Two arguments: `play` starts the video at once, without the title
+  screen, and `repeat` turns repeat on. Anything else prints the two and
+  stops.
+- Any input acts at once, as well as showing the faded transport. At
+  first the input that brought the transport back did nothing else, so a
+  gamepad's A had to be pressed twice to pause.
+
+## Step 7: exact tiles
+
+- `src/encode_exact.py` cuts each frame's tiles from its pixels; thin
+  lines, like the broom handle at 2:09, keep every piece. Real gray is
+  found by its slope and drawn in 17 levels of a 4x4 ordered dither, one
+  level a cell (opening 2, slope under 16, gamma 2.2, from the tuner).
+- The three planes are one cache of 765 tiles, planned with the whole
+  video in view: two frames' tiles together fit, no frame takes more than
+  700, a new tile takes the slot needed furthest in the future (Belady),
+  and frames over 60,000 cycles have tiles uploaded ahead in cheaper
+  frames.
+- The stream writes to XRAM addresses: tiles at 0, map buffers from 6144.
+  Seeks read `seek.bin`, each second's whole XRAM state, so playback
+  carries no keyframes.
+- A frame's sound goes to the PCM device when its decoding starts: a large
+  block at 0:57 used to leave the device dry.
+- Results: 94 tile uploads a frame; 0.08% of cells show a nearest tile;
+  decoding 38,600 cycles in an average frame, 113,000 at most. In the
+  emulator, no frame is late at 8 MHz at full volume, 15 with the volume
+  lowered, where the volume scaler costs about 74,000 cycles a frame.
+- The emulator's windowed audio still skips while the player keeps the PCM
+  device fed; that is for the emulator.
+
+## Step 8: compressed sound
+
+- The sound is 4-bit block DPCM, from `src/adpcm.c`: per frame, start
+  samples and 33 blocks of a scale byte and a code byte a pair. 1,064
+  bytes a frame instead of 4,108; `frames.bin` falls from 44.8 MB to
+  24.8 MB, the archive from 36.5 MB to 16.4 MB. About 30 dB SNR. Trellis
+  search gains 0.4 dB over greedy; noise shaping moves hiss from the
+  treble to 1 to 4 kHz, so it is off.
+- The 6502 decodes it in `src/copy.s`: a code byte indexes whole-byte
+  tables, 16 KB, for both channels' deltas at the volume, and the loop
+  keeps the running samples in its own operands. 69 cycles a pair,
+  71,000 a frame. The separate volume scaler is gone.
+- The sound decoder walks the stream on its own, into a 4 KB stage in
+  XRAM; waiting on the video decoder, it ran dry at 0:51.
+- A volume change takes effect at the next frame's start: changed
+  mid-frame, a running sample could leave 16 bits. The tables refill in
+  about 100,000 cycles, in assembly.
+- Results in the emulator, the whole video: at 8 MHz, no late frame and
+  no gap in the sound, at full volume and lowered; the decoded samples
+  match a reference decode byte for byte. At 7.5 MHz three gaps of about
+  12 ms (1:03, 1:55); at 7 MHz a few late frames and short gaps. The
+  last commit held to about 5 MHz.
+
+## Step 9: per-pixel gray, opening by motion
+
+- Real gray takes a level a pixel, not a cell: shadows lose their
+  stair-steps for about 1,000 cycles a frame more.
+- The tuner's shadow test sorts gray into motion blur (gray that comes and
+  goes: no gray within 4 pixels in the frame before or after), soft edge
+  (a ramp of 6 pixels or less between black and white) and shadow. As a
+  mask it did not hold up; as a measure it does: each frame's opening is 2
+  at a motion share (blur over blur plus shadow) of 32% or less, 16 at 64%
+  or more, in proportion between. Opening only, gray 0 to 255, no slope
+  test, gamma 1.6, 16 levels, line 127, chosen in the tuner.
+- Results: 57% of frames take opening 2, 22% take 16. 107 tile uploads a
+  frame, 40,800 cycles in an average frame, 121,000 at most; archive
+  17.1 MB. In the emulator, the whole video at 8 MHz with no late frame
+  and no gap in the sound; at 7.5 MHz one 12 ms gap, at 1:03.7. The busy
+  stretch at 1:55 takes a large opening and no longer gaps.
+- `--gap 8` lowers the estimated cycles but plays worse at 7.5 MHz, so the
+  gap stays 4.
+- The share is averaged over 8 frames each side (`--smooth 8`): frame by
+  frame, the opening could jump between 2 and 16 and a shadow blink, as
+  under the girl at 2:27. Smoothed: 56% of frames at 2, 17% at 16; 106
+  uploads a frame, 40,700 cycles on average, 127,000 at most; archive
+  17.1 MB. 8 MHz plays clean; at 7.5 MHz, three short gaps and one late
+  frame at 1:55, where the busy stretch now takes a smaller opening.

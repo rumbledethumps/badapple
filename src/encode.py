@@ -1,43 +1,65 @@
 #!/usr/bin/env python3
-"""Bad Apple!! encoder: 80x60 marching-squares tiles, three levels, 511 tiles.
+"""Bad Apple!! encoder: hard edges over real gray, on three planes of tiles.
 
 Each 512x384 frame is box-filtered to an 81x61 grid of corner samples. Each
-of the 80x60 cells becomes one 8x8 1bpp tile on a 640x480 canvas. A dark
-line and a light line, both marching-squares iso-lines snapped to SNAP
-positions per tile edge, split each tile into black (under the dark
-threshold), a checkerboard fill (between), and white (over the light one).
+of the 80x60 cells becomes 8x8 1bpp tiles on a 640x480 canvas, in three
+mode 2 layers:
 
-The whole video shares 511 tiles: the 511 it uses most. A cell whose tile
-is not among them shows the nearest one, counting pixels on the tile's
+- Real gray. Source pixels between GRAY_LO and GRAY_HI are gray. An opening
+  of OPENING source pixels (shrink, then grow back) drops the thin gray
+  bands along edges, which are antialiasing, and keeps wide gray: motion
+  blur, glows, shadows.
+- Layer 0, plane 0: the real gray as a checkerboard, under a marching-squares
+  outline snapped to GRAY_SNAP positions per tile edge. 256 tiles; tile 0
+  is all black.
+- Layers 1 and 2, planes 1 and 2: one hard white marching-squares outline at
+  EDGE, snapped to EDGE_SNAP positions, clear inside the real gray. 511
+  tiles from two layers of 256; tile 0 of both is clear.
+
+Each layer set holds the tiles the whole video uses most. Spare slots on
+layers 1 and 2 take the gray tiles that did not fit on layer 0: a
+checkerboard tile looks the same there, over layer 0's black tile 0, in a
+cell with no edge. A cell whose tile is not among them shows the nearest
+one, counting pixels on the tile's
 border BORDER_WEIGHT times, so outlines stay continuous across tiles.
 
-The 511 tiles live on two mode 2 layers of 256 tiles each. Tile 0 of both
-layers is all black, which is transparent on the top layer. A cell shows a
-bottom tile under the top layer's tile 0, or a top tile over the bottom
-layer's tile 0.
-
-Output, in ARCHIVE, which the build unpacks: tiles.bin and frames.bin,
-  below. For the whole video it is src/badapple.tar.xz, the archive the
+Output, in ARCHIVE, which the build unpacks: tiles.bin, frames.bin,
+  index.bin, title.bin, and transport.bin, below. For the whole video it is src/badapple.tar.xz, the archive the
   build uses; for part of it, OUT/badapple.tar.xz. The archive has fixed
   times and owners, so the same video and settings give the same bytes.
 
 Output, in OUT:
-  tiles.bin    4096 bytes: 256 bottom tiles, then 256 top tiles, 8 bytes
+  tiles.bin    6144 bytes: 256 tiles for each of the three layers, 8 bytes
                each, one byte per row, leftmost pixel in the high bit.
-  frames.bin   16-byte header ("BAD2", frame count, first source frame,
-               fps), then a 13,708-byte record per frame, so the player
-               reads a frame and its sound together: the 80x60 bottom map
-               and the 80x60 top map, one tile ID per byte, 9600 bytes, then
-               the frame's sound, 1027 samples, 4108 bytes. The sound is raw
-               PCM, 30,810 Hz, 16-bit signed little-endian, stereo, 1 dB
-               lower so the resampler does not clip. Niconico's AAC encoder
+  frames.bin   16-byte header ("BAD5", frame count, first source frame,
+               fps, length of frame 0's delta block), then per frame its
+               delta block and its sound. A delta block turns the maps of
+               two frames back, which the player's buffer still holds,
+               into this frame's three maps, 14,400 bytes, layers 0, 1, 2:
+               the length of the next frame's delta block (2 bytes),
+               flags (1 byte), runs of a map offset (2 bytes), a count (1
+               to 255) and that many tile IDs, then FF FF. The first two
+               frames of each second are keyframes, against cleared maps,
+               flagged 1, so the player clears the buffer first and can
+               start there.
+               The sound is 1027 samples, 4108 bytes, of raw PCM:
+               30,810 Hz, 16-bit signed little-endian, stereo, resampled
+               with soxr and dithered to 16 bits. Niconico's AAC encoder
                kept nothing above about 15.4 kHz, and a rate carries up to
-               half of itself, so 30.8 kHz carries it all; 30,810 Hz is the
-               next rate with a whole number of samples a frame.
-  preview.mp4  the encoded frames as the two layers draw them, with the
+               half of itself, so 30.8 kHz carries it all; 30,810 Hz is
+               the next rate with a whole number of samples a frame. The
+               decoded AAC peaks at +2.05 dBFS, so the sound is 2.5 dB
+               lower: nothing clips here, and the RIA's resampler has
+               0.45 dB more.
+  index.bin    for each second, the file offset of its first frame (4
+               bytes) and the length of that frame's delta block (2 bytes).
+  title.bin    the title screen, from src/title.py.
+  transport.bin  the transport's palettes and images, from src/transport.py.
+  title.png    the title screen as the VGA would draw it.
+  preview.mp4  the encoded frames as the three layers draw them, with the
                soundtrack of the same span.
-  tileset.npz  the 511 tiles, cached for the next run with the same
-               thresholds and snapping.
+  tileset.npz  the edge and gray tiles, cached for the next run with the same
+               settings.
 """
 
 import argparse
@@ -52,17 +74,25 @@ import time
 
 import numpy as np
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import title  # noqa: E402
+import transport  # noqa: E402
+
 SRC_W, SRC_H = 512, 384
 COLS, ROWS, TILE = 80, 60, 8
 FPS = 30
 SETS = 511
 MAP_BYTES = COLS * ROWS
-FRAME_BYTES = 2 * MAP_BYTES
+LAYERS = 3
+FRAME_BYTES = LAYERS * MAP_BYTES
 AUDIO_RATE = 30810
 AUDIO_FRAME = 4  # bytes per stereo 16-bit sample pair
 assert AUDIO_RATE % FPS == 0, "a whole number of samples a frame"
 SOUND_BYTES = AUDIO_RATE // FPS * AUDIO_FRAME  # 4108
-RECORD_BYTES = FRAME_BYTES + SOUND_BYTES
+DELTA_BACK = 2  # a frame's delta is against the frame its buffer last held
+KEYFRAME = 1    # a delta block's flag: clear the buffer, then apply the runs
+RUN_GAP = 4     # unchanged bytes that a run carries rather than start a new run
+END_OF_RUNS = b"\xff\xff"
 
 
 # Corner samples: a box one cell wide around each of the 81x61 corners.
@@ -127,10 +157,6 @@ def line_keys(g, thr, k):
     return key | linked.astype(np.int64) << 16
 
 
-def cell_keys(g, dark, light, k):
-    return line_keys(g, dark, k) | line_keys(g, light, k) << LINE_BITS
-
-
 def inside_polygon(poly):
     """8x8 mask of the pixel centers inside a polygon (even-odd)."""
     ys, xs = np.mgrid[0:TILE, 0:TILE] + 0.5
@@ -178,10 +204,8 @@ CHECKER = (X + Y) % 2 == 1
 BIT = np.uint64(1) << np.arange(64, dtype=np.uint64)
 
 
-def tile_of_key(ckey, k):
-    level = line_mask(ckey & ((1 << LINE_BITS) - 1), k).astype(int) + line_mask(ckey >> LINE_BITS, k)
-    px = np.where(level == 0, False, np.where(level == 2, True, CHECKER))
-    return np.uint64((px.ravel().astype(np.uint64) * BIT).sum())
+def mask_bits(mask):
+    return np.uint64((mask.ravel().astype(np.uint64) * BIT).sum())
 
 
 def tile_pixels(tiles):
@@ -200,41 +224,73 @@ def tile_rows(tile):
     return bytes(rows)
 
 
+def opening(mask, r):
+    """Square opening of a boolean mask: erode by r, then dilate by r."""
+    if r == 0:
+        return mask
+
+    def run(m, axis, erode):
+        pad = [(0, 0), (0, 0)]
+        pad[axis] = (r + 1, r)
+        c = np.cumsum(np.pad(m, pad, constant_values=erode).astype(np.int32), axis=axis)
+        n = m.shape[axis]
+        hi = np.take(c, np.arange(2 * r + 1, n + 2 * r + 1), axis=axis)
+        lo = np.take(c, np.arange(0, n), axis=axis)
+        return (hi - lo == 2 * r + 1) if erode else (hi - lo > 0)
+
+    m = run(run(mask, 1, True), 0, True)
+    return run(run(m, 1, False), 0, False)
+
+
 class Tiler:
-    """Turns frames into tiles, caching each key's tile."""
+    """Turns a frame into edge keys and gray keys, caching each key's tile."""
 
-    def __init__(self, dark, light, snap):
-        self.dark, self.light, self.snap = dark, light, snap
-        self.tiles = {}
+    def __init__(self, gray_lo, gray_hi, opening, edge, edge_snap, gray_snap):
+        self.gray_lo, self.gray_hi, self.opening = gray_lo, gray_hi, opening
+        self.edge, self.edge_snap, self.gray_snap = edge, edge_snap, gray_snap
+        self.edge_tiles, self.gray_tiles = {}, {}
 
-    def keys(self, g):
-        return cell_keys(g, self.dark, self.light, self.snap)
+    def keys(self, img):
+        real = opening((img > self.gray_lo) & (img < self.gray_hi), self.opening)
+        edge = line_keys(corners(np.where(real, 0.0, img)), self.edge, self.edge_snap)
+        gray = line_keys(corners(real.astype(np.float64)), 0.5, self.gray_snap)
+        return edge.ravel(), gray.ravel()
 
-    def tile(self, ckey):
-        t = self.tiles.get(ckey)
+    def edge_tile(self, key):
+        t = self.edge_tiles.get(key)
         if t is None:
-            t = self.tiles[ckey] = tile_of_key(ckey, self.snap)
+            t = self.edge_tiles[key] = mask_bits(line_mask(key, self.edge_snap))
+        return t
+
+    def gray_tile(self, key):
+        t = self.gray_tiles.get(key)
+        if t is None:
+            t = self.gray_tiles[key] = mask_bits(line_mask(key, self.gray_snap) & CHECKER)
         return t
 
 
-def build_tileset(video, tiler):
-    """The SETS tiles the whole video uses most, all-black first."""
-    counts = {}
-    frames = 0
-    for img in read_frames(video):
-        keys, n = np.unique(tiler.keys(corners(img)), return_counts=True)
-        for key, c in zip(keys.tolist(), n.tolist()):
-            counts[key] = counts.get(key, 0) + c
-        frames += 1
+def rank(counts, tile_of):
+    """Every tile but the empty one, most used first, and its uses."""
     use = {}
     for key, c in counts.items():
-        t = int(tiler.tile(key))
+        t = int(tile_of(key))
         use[t] = use.get(t, 0) + c
-    ranked = sorted(use, key=lambda t: (-use[t], t))
-    kept = [0] + [t for t in ranked if t != 0][:SETS - 1]
-    cells = sum(use.values())
-    exact = sum(use[t] for t in kept if t in use)
-    return np.array(kept, np.uint64), len(use), exact / cells, frames
+    return [t for t in sorted(use, key=lambda t: (-use[t], t)) if t != 0], use
+
+
+def build_tilesets(video, tiler):
+    """The edge and gray tiles of the whole video, each most used first."""
+    edge_counts, gray_counts = {}, {}
+    for img in read_frames(video):
+        for keys, counts in zip(tiler.keys(img), (edge_counts, gray_counts)):
+            k, n = np.unique(keys, return_counts=True)
+            for key, c in zip(k.tolist(), n.tolist()):
+                counts[key] = counts.get(key, 0) + c
+    return rank(edge_counts, tiler.edge_tile), rank(gray_counts, tiler.gray_tile)
+
+
+def coverage(kept, use):
+    return sum(use.get(int(t), 0) for t in set(int(t) for t in kept)) / sum(use.values())
 
 
 class Matcher:
@@ -242,7 +298,9 @@ class Matcher:
 
     def __init__(self, kept, border_weight):
         self.kept = kept
-        self.index = {int(t): i for i, t in enumerate(kept)}
+        self.index = {}
+        for i, t in enumerate(kept):
+            self.index.setdefault(int(t), i)
         self.kept_px = tile_pixels(kept)
         border = (X == 0) | (X == TILE - 1) | (Y == 0) | (Y == TILE - 1)
         self.weight = np.where(border, border_weight, 1).ravel()
@@ -278,7 +336,8 @@ def read_audio(video, first, count):
     """The soundtrack of count frames from frame first, as raw PCM."""
     raw = subprocess.run(
         ["ffmpeg", "-v", "error", "-i", video, "-ss", f"{first / FPS:.6f}", "-t", f"{count / FPS:.6f}",
-         "-vn", "-af", "volume=-1dB", "-ar", str(AUDIO_RATE), "-ac", "2", "-f", "s16le", "-"],
+         "-vn", "-af", f"volume=-2.5dB,aresample={AUDIO_RATE}:resampler=soxr:precision=28:dither_method=triangular",
+         "-ar", str(AUDIO_RATE), "-ac", "2", "-f", "s16le", "-"],
         capture_output=True, check=True).stdout
     size = count * SOUND_BYTES
     return raw[:size] + bytes(max(0, size - len(raw)))
@@ -287,6 +346,36 @@ def read_audio(video, first, count):
 def frame_audio(audio, n):
     """Frame n's slice of the soundtrack."""
     return audio[n * SOUND_BYTES:(n + 1) * SOUND_BYTES]
+
+
+def delta_runs(cur, prev):
+    """The runs that turn map bytes prev into cur: each is a 2-byte offset,
+    a count of 1 to 255, and that many bytes."""
+    changed = np.flatnonzero(cur != prev)
+    out = bytearray()
+    i = 0
+    while i < len(changed):
+        start = end = int(changed[i])
+        i += 1
+        while i < len(changed) and changed[i] - end <= RUN_GAP + 1 and changed[i] - start < 255:
+            end = int(changed[i])
+            i += 1
+        out += struct.pack("<HB", start, end - start + 1) + cur[start:end + 1].tobytes()
+    return bytes(out)
+
+
+def apply_runs(maps, block):
+    """Applies a delta block to maps in place; returns the next length."""
+    next_len, flags = struct.unpack_from("<HB", block)
+    if flags & KEYFRAME:
+        maps[:] = 0
+    at = 3
+    while block[at:at + 2] != END_OF_RUNS:
+        start, n = struct.unpack_from("<HB", block, at)
+        maps[start:start + n] = np.frombuffer(block, np.uint8, n, at + 3)
+        at += 3 + n
+    assert at + 2 == len(block)
+    return next_len
 
 
 def layer_of(index):
@@ -306,38 +395,64 @@ def main():
                     "whole video, OUT/badapple.tar.xz for part of it)")
     ap.add_argument("--start", type=float, default=0.0, help="first second to encode")
     ap.add_argument("--seconds", type=float, help="seconds to encode (default: to the end)")
-    ap.add_argument("--dark", type=int, default=128, help="dark threshold, of 255")
-    ap.add_argument("--light", type=int, default=192, help="light threshold, of 255")
-    ap.add_argument("--snap", type=int, default=3, choices=range(1, 9), help="crossing positions per tile edge")
+    ap.add_argument("--gray-lo", type=int, default=31, help="lowest real gray, of 255")
+    ap.add_argument("--gray-hi", type=int, default=254, help="highest real gray, of 255")
+    ap.add_argument("--opening", type=int, default=12, help="source pixels of gray band dropped as antialiasing")
+    ap.add_argument("--edge", type=int, default=127, help="the hard edge's gray, of 255")
+    ap.add_argument("--edge-snap", type=int, default=7, choices=range(1, 9), help="edge crossings per tile edge")
+    ap.add_argument("--gray-snap", type=int, default=7, choices=range(1, 9), help="gray crossings per tile edge")
     ap.add_argument("--border-weight", type=int, default=4, help="weight of a border pixel when matching")
     ap.add_argument("--no-preview", action="store_true", help="skip preview.mp4")
+    ap.add_argument("--fonts", default="data/fonts", help="the title screen's fonts, for src/title.py")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
     if args.archive is None:
         whole = args.start == 0 and args.seconds is None
         args.archive = "src/badapple.tar.xz" if whole else os.path.join(args.out, "badapple.tar.xz")
 
-    tiler = Tiler(args.dark / 255, args.light / 255, args.snap)
+    tiler = Tiler(args.gray_lo / 255, args.gray_hi / 255, args.opening, args.edge / 255,
+                  args.edge_snap, args.gray_snap)
     cache = os.path.join(args.out, "tileset.npz")
-    params = np.array([args.dark, args.light, args.snap])
+    params = np.array([4, args.gray_lo, args.gray_hi, args.opening, args.edge, args.edge_snap, args.gray_snap])
     t0 = time.time()
     if os.path.exists(cache) and np.array_equal(np.load(cache)["params"], params):
-        kept = np.load(cache)["kept"]
-        print(f"Tile set: {len(kept)} tiles from {cache}")
+        z = np.load(cache, allow_pickle=True)
+        edge_ranked, gray_ranked = z["edge"].tolist(), z["gray"].tolist()
+        edge_use, gray_use = z["edge_use"].item(), z["gray_use"].item()
+        print(f"Tile sets from {cache}")
         set_seconds = None
     else:
-        kept, distinct, exact, frames = build_tileset(args.video, tiler)
-        np.savez(cache, params=params, kept=kept)
+        (edge_ranked, edge_use), (gray_ranked, gray_use) = build_tilesets(args.video, tiler)
+        np.savez(cache, params=params, edge=np.array(edge_ranked, np.uint64), gray=np.array(gray_ranked, np.uint64),
+                 edge_use=np.array(edge_use, object), gray_use=np.array(gray_use, object))
         set_seconds = time.time() - t0
-        print(f"Tile set: {distinct} distinct tiles in {frames} frames; the {len(kept)} kept "
-              f"cover {100 * exact:.2f}% of cells ({set_seconds:.0f} s)")
-    match = Matcher(kept, args.border_weight)
+
+    # Planes 1 and 2 hold the 510 edge tiles used most, after the empty tile
+    # 0. Plane 0 holds the 255 gray tiles used most, after the black tile 0.
+    # Spare slots on planes 1 and 2 take the next gray tiles: a checkerboard
+    # tile looks the same there, over plane 0's tile 0, in a cell with no edge.
+    kept_edge = [0] + edge_ranked[:SETS - 1]
+    kept_gray = [0] + gray_ranked[:255]
+    overflow = gray_ranked[255:255 + SETS - len(kept_edge)]
+    first_overflow = len(kept_edge)
+    slots = np.array(kept_edge + overflow + [0] * (SETS - len(kept_edge) - len(overflow)), np.uint64)
+    kept_gray = np.array(kept_gray + [0] * (256 - len(kept_gray)), np.uint64)
+    gray_all = np.concatenate([kept_gray, np.array(overflow, np.uint64)])
+    print(f"Edge tiles: {len(edge_ranked) + 1} distinct; {len(kept_edge)} kept cover "
+          f"{100 * coverage(kept_edge, edge_use):.2f}% of cells")
+    print(f"Gray tiles: {len(gray_ranked) + 1} distinct; 256 on plane 0 and {len(overflow)} in spare edge slots "
+          f"cover {100 * coverage(gray_all, gray_use):.2f}% of cells")
+    match_edge = Matcher(np.array(kept_edge, np.uint64), args.border_weight)
+    match_gray = Matcher(kept_gray, args.border_weight)
+    match_gray_all = Matcher(gray_all, args.border_weight)
 
     with open(os.path.join(args.out, "tiles.bin"), "wb") as f:
+        for tile in kept_gray:
+            f.write(tile_rows(tile))
         for layer in range(2):
             for tid in range(256):
                 index = tid if layer == 0 else (0 if tid == 0 else tid + 255)
-                f.write(tile_rows(kept[index]))
+                f.write(tile_rows(slots[index]))
 
     first = round(args.start * FPS)
     count = round(args.seconds * FPS) if args.seconds else None
@@ -345,37 +460,64 @@ def main():
     shown, maps = [], []
     stand_in_cells = 0
     for img in read_frames(args.video, first, count):
-        keys = tiler.keys(corners(img)).ravel()
-        bottom, top = bytearray(MAP_BYTES), bytearray(MAP_BYTES)
+        edge_keys, gray_keys = tiler.keys(img)
+        gray_map, edge1, edge2 = bytearray(MAP_BYTES), bytearray(MAP_BYTES), bytearray(MAP_BYTES)
         frame = np.empty(MAP_BYTES, np.uint64)
-        for cell, key in enumerate(keys.tolist()):
-            tile = tiler.tile(key)
-            i = match(tile)
-            stand_in_cells += int(kept[i] != tile)
-            frame[cell] = kept[i]
-            bottom[cell], top[cell] = layer_of(i)
+        for cell, (ek, gk) in enumerate(zip(edge_keys.tolist(), gray_keys.tolist())):
+            et, gt = tiler.edge_tile(ek), tiler.gray_tile(gk)
+            i = match_edge(et)
+            if i == 0:
+                g = match_gray_all(gt)
+                if g >= 256:
+                    i, g = first_overflow + g - 256, 0
+            else:
+                g = match_gray(gt)
+            stand_in_cells += int(int(slots[i]) | int(kept_gray[g]) != int(et) | int(gt))
+            frame[cell] = slots[i] | kept_gray[g]
+            gray_map[cell] = g
+            edge1[cell], edge2[cell] = layer_of(i)
         shown.append(frame)
-        maps.append(bytes(bottom) + bytes(top))
+        maps.append(bytes(gray_map) + bytes(edge1) + bytes(edge2))
     count = len(maps)
     encode_seconds = time.time() - t1
 
     audio = read_audio(args.video, first, count)
+    zeros = np.zeros(FRAME_BYTES, np.uint8)
+    arrays = [np.frombuffer(m, np.uint8) for m in maps]
+    # Each second starts with two keyframes, against cleared maps, so the
+    # player can start there.
+    keyframe = [n % FPS < DELTA_BACK for n in range(count)]
+    runs = [delta_runs(arrays[n], zeros if keyframe[n] else arrays[n - DELTA_BACK]) for n in range(count)]
+    lengths = [3 + len(r) + len(END_OF_RUNS) for r in runs] + [0]
     with open(os.path.join(args.out, "frames.bin"), "wb") as f:
-        f.write(b"BAD2" + struct.pack("<HHB", count, first, FPS) + bytes(7))
-        for n, m in enumerate(maps):
-            f.write(m + frame_audio(audio, n))
+        f.write(b"BAD5" + struct.pack("<HHBH", count, first, FPS, lengths[0]) + bytes(5))
+        offsets = []
+        for n in range(count):
+            offsets.append(f.tell())
+            f.write(struct.pack("<HB", lengths[n + 1], KEYFRAME if keyframe[n] else 0)
+                    + runs[n] + END_OF_RUNS + frame_audio(audio, n))
+    with open(os.path.join(args.out, "index.bin"), "wb") as f:
+        for n in range(0, count, FPS):
+            f.write(struct.pack("<IH", offsets[n], lengths[n]))
 
-    # Draw the layers back from the files: every frame must come out as encoded.
-    tiles = np.frombuffer(open(os.path.join(args.out, "tiles.bin"), "rb").read(), np.uint8).reshape(2, 256, 8)
-    layer_px = np.unpackbits(tiles, axis=2).reshape(2, 256, TILE, TILE).astype(bool)  # [layer][id][y][x]
-    data = open(os.path.join(args.out, "frames.bin"), "rb").read()[16:]
-    assert len(data) == count * RECORD_BYTES
-    assert b"".join(data[n * RECORD_BYTES + FRAME_BYTES:(n + 1) * RECORD_BYTES]
-                    for n in range(count)) == audio, "the sound differs"
+    # Play the file back as the player does, into two map buffers, and draw
+    # the layers: every frame must come out as encoded.
+    tiles = np.frombuffer(open(os.path.join(args.out, "tiles.bin"), "rb").read(), np.uint8).reshape(LAYERS, 256, 8)
+    layer_px = np.unpackbits(tiles, axis=2).reshape(LAYERS, 256, TILE, TILE).astype(bool)  # [layer][id][y][x]
+    data = open(os.path.join(args.out, "frames.bin"), "rb").read()
+    length, at = struct.unpack_from("<H", data, 9)[0], 16
+    buffers = [zeros.copy() for _ in range(DELTA_BACK)]
+    sound = bytearray()
     canvas = []
     for n in range(count):
-        m = np.frombuffer(data, np.uint8, FRAME_BYTES, n * RECORD_BYTES).reshape(2, ROWS, COLS)
-        cells = layer_px[0][m[0]] | layer_px[1][m[1]]                      # [row][col][y][x]
+        buf = buffers[n % DELTA_BACK]
+        next_len = apply_runs(buf, data[at:at + length])
+        sound += data[at + length:at + length + SOUND_BYTES]
+        at += length + SOUND_BYTES
+        length = next_len
+        assert buf.tobytes() == maps[n], f"frame {n}'s maps differ"
+        m = buf.reshape(LAYERS, ROWS, COLS)
+        cells = layer_px[0][m[0]] | layer_px[1][m[1]] | layer_px[2][m[2]]                     # [row][col][y][x]
         img = cells.transpose(0, 2, 1, 3).reshape(ROWS * TILE, COLS * TILE)
         want = tile_pixels(shown[n]).reshape(ROWS, COLS, TILE, TILE).transpose(0, 2, 1, 3)
         assert np.array_equal(img, want.reshape(ROWS * TILE, COLS * TILE).astype(bool)), f"frame {n} differs"
@@ -383,13 +525,17 @@ def main():
 
     print(f"Encoded {count} frames from frame {first} ({first / FPS:.2f} s) in {encode_seconds:.1f} s; "
           f"{stand_in_cells} of {count * MAP_BYTES} cells use a stand-in tile; "
-          f"{len(match.stand_ins)} distinct stand-ins")
-    print(f"Wrote tiles.bin and frames.bin ({16 + count * RECORD_BYTES:,} bytes) to {args.out}")
-    write_archive(args.archive, args.out, ["tiles.bin", "frames.bin"])
+          f"{len(match_edge.stand_ins) + len(match_gray.stand_ins) + len(match_gray_all.stand_ins)} distinct stand-ins")
+    assert at == len(data) and length == 0 and sound == audio, "the stream or the sound differs"
+    print(f"Wrote tiles.bin and frames.bin ({len(data):,} bytes) to {args.out}; delta blocks "
+          f"{sum(lengths):,} bytes, {sum(lengths) / count:.0f} a frame on average, {max(lengths):,} at most")
+    print(title.build(args.out, args.fonts))
+    print(transport.build(args.out, args.fonts))
+    write_archive(args.archive, args.out, ["tiles.bin", "frames.bin", "index.bin", "title.bin", "transport.bin"])
     print(f"Wrote {args.archive} ({os.path.getsize(args.archive):,} bytes)")
     if set_seconds is not None:
         total = 6573
-        print(f"Estimate for all {total} frames: {set_seconds:.0f} s for the tile set, then "
+        print(f"Estimate for all {total} frames: {set_seconds:.0f} s for the tile sets, then "
               f"{encode_seconds / count * total:.0f} s to encode")
 
     if not args.no_preview:
